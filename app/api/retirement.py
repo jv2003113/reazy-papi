@@ -1,5 +1,6 @@
 from typing import List, Any
 from uuid import UUID
+from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -166,6 +167,14 @@ async def generate_primary_plan(
         except (ValueError, TypeError):
             return 0
 
+    def safe_decimal(val, default):
+        if val == "" or val is None:
+            return Decimal(str(default))
+        try:
+            return Decimal(str(val))
+        except (ValueError, TypeError, Exception):
+            return Decimal(str(default))
+
     # Calculate initial net worth
     initial_assets = (
         safe_int(form_data.get("savingsBalance")) +
@@ -185,8 +194,8 @@ async def generate_primary_plan(
         endAge=95,
         desiredAnnualRetirementSpending=form_data.get("expectedAnnualExpenses", 80000),
         initialNetWorth=initial_assets,
-        portfolioGrowthRate=Decimal(str(form_data.get("portfolioGrowthRate", 7.0))),
-        inflationRate=Decimal(str(form_data.get("inflationRate", 3.0))),
+        portfolioGrowthRate=safe_decimal(form_data.get("portfolioGrowthRate"), 7.0),
+        inflationRate=safe_decimal(form_data.get("inflationRate"), 3.0),
         # Ensure other fields are defaults
     )
     

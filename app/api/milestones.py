@@ -1,10 +1,14 @@
 from typing import List, Any
-from fastapi import APIRouter
+from app.api import deps
+from fastapi import APIRouter, Depends
+from app.models.user import User
 
 router = APIRouter()
 
 @router.get("/standard", response_model=List[dict])
-async def get_standard_milestones() -> Any:
+async def get_standard_milestones(
+    current_user: User = Depends(deps.get_current_user)
+) -> Any:
     return [
         {"id": "std_1", "name": "Retirement Starts", "title": "Retirement Starts", "description": "You retire", "type": "standard", "category": "retirement", "defaultAge": 65},
         {"id": "std_2", "name": "Social Security Starts", "title": "Social Security Starts", "description": "Social Security payments begin", "type": "standard", "category": "income", "defaultAge": 67},
