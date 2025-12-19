@@ -29,6 +29,7 @@ class UserGoalCreate(BaseModel):
     customIcon: Optional[str] = None
     targetDate: Optional[datetime] = None
     status: str = "in_progress"
+    targetAmount: Optional[float] = None  # Added targetAmount
 
 class UserGoalUpdate(BaseModel):
     status: Optional[str] = None
@@ -64,9 +65,9 @@ async def get_ref_goals(
             RefGoal(title="Emergency Fund", description="Save 3-6 months of expenses", category="risk", icon="ShieldCheck", defaultTargetOffset=1),
             RefGoal(title="Max 401(k)", description="Contribute the maximum annual amount to your 401(k)", category="retirement", icon="Briefcase", defaultTargetOffset=1),
             RefGoal(title="Pay Off Debt", description="Eliminate high-interest consumer debt", category="financial", icon="CreditCard", defaultTargetOffset=3),
-            RefGoal(title="Buy a Home", description="Save for a down payment on a new home", category="lifestyle", icon="Home", defaultTargetOffset=5),
+            RefGoal(title="Pay off Mortgage", description="Pay off remaining mortgage balance", category="lifestyle", icon="Home", defaultTargetOffset=5),
             RefGoal(title="Health Savings", description="Fund your HSA for medical expenses", category="health", icon="HeartPulse", defaultTargetOffset=1),
-            RefGoal(title="Passive Income", description="Establish a source of passive income", category="investing", icon="TrendingUp", defaultTargetOffset=10),
+            RefGoal(title="Additional Income", description="Establish sources of additional income", category="investing", icon="TrendingUp", defaultTargetOffset=10),
         ]
         for g in defaults:
             db.add(g)
@@ -143,7 +144,8 @@ async def create_user_goal(
         if ref_goal:
             calc = GoalCalculator.calculate_initial_values(current_user, ref_goal.title)
             initial_current = calc["currentAmount"]
-            initial_target = calc["targetAmount"]
+            # Prefer user-supplied target over calculated default
+            initial_target = goal_in.targetAmount if goal_in.targetAmount is not None else calc["targetAmount"]
             if initial_target > 0:
                 initial_progress = int((initial_current / initial_target) * 100)
                 if initial_progress > 100:
