@@ -10,6 +10,7 @@ from app.api import deps
 from app.database import get_db
 from app.models.user import User
 from app.models.retirement import RetirementPlan, AnnualSnapshot
+from app.services.recommendation_engine import RecommendationEngine
 
 router = APIRouter()
 
@@ -29,7 +30,7 @@ class Resource(BaseModel):
     description: str
 
 class DashboardData(BaseModel):
-    retirementReadiness: dict
+    retirementTarget: dict
     monthlyIncome: dict
     savingsRate: dict
     portfolioAllocation: dict
@@ -78,8 +79,10 @@ async def get_dashboard(
             savings_rate_amt = savings_monthly
             savings_rate_pct = int((savings_monthly / monthly_income) * 100)
               
-        # Readiness
-        readiness_score = 75 
+        # Retirement Target & Progress
+        retirement_target_amount = 0
+        current_amount = float(portfolio_total) # Liquid assets only (excludes real estate)
+        progress_pct = 0
         
         # Projected Monthly Income (at retirement - when BOTH are retired if couple)
         # Determine the year (relative to now) when the last person retires
@@ -95,8 +98,15 @@ async def get_dashboard(
         stmt = select(AnnualSnapshot).where(AnnualSnapshot.planId == plan.id, AnnualSnapshot.age == target_lookup_age)
         snap_res = await db.execute(stmt)
         snap = snap_res.scalars().first()
+        
         if snap:
              projected_income = float(snap.grossIncome) / 12
+             # Target Amount Calculation:
+             # Reverse engineer based on Expenses should be 4% of target.
+             # Target = TotalExpenses / 0.04
+             retirement_target_amount = float(snap.totalExpenses) / 0.04
+             if retirement_target_amount > 0:
+                 progress_pct = int((current_amount / retirement_target_amount) * 100)
         else:
              projected_income = float(plan.estimatedSocialSecurityBenefit or 0) / 12
              
@@ -104,7 +114,7 @@ async def get_dashboard(
     # Cash: Savings + Checking
     cash_val = float(current_user.savingsBalance or 0) + float(current_user.checkingBalance or 0)
     real_estate_val = float(current_user.realEstateValue or 0)
-    investments_val = float(portfolio_total) - cash_val - real_estate_val
+    investments_val = float(portfolio_total) - cash_val # Removed real_estate_val subtraction as portfolio_total doesn't include it
     
     # 60/40 Split for investments as placeholder
     stocks_val = investments_val * 0.6
@@ -114,21 +124,40 @@ async def get_dashboard(
         return int((val / tot * 100)) if tot > 0 else 0
         
     portfolio_allocation = {
-        "total": float(portfolio_total),
+        "total": float(portfolio_total) + real_estate_val, # Add real estate here for total allocation view? Or keep consistent? User said "Progress... do not include house equity". Allocation might want it.
+        # Line 117-124 showed breakdown. If I change portfolio_total meaning there, it affects frontend.
+        # Previous code: portfolio_allocation["total"] = portfolio_total.
+        # And categories included realEstate.
+        # But portfolio_total sum at line 55 didn't include realEstate.
+        # So pct(real_estate_val, portfolio_total) was likely calculating % of LIQUID assets, which is weird if real_estate > liquid.
+        # Or real_estate_val was treated as separate?
+        # Line 121: "percentage": pct(real_estate_val, float(portfolio_total)).
+        # If portfolio_total = 100k liquid, and House = 500k. Pct = 500%.
+        # The previous code was likely buggy or assuming definitions I'm correcting.
+        # I'll update portfolio_allocation["total"] to be Liquid + RealEstate for the PIE CHART correctness, 
+        # but keep "current_amount" for Progress as Liquid Only.
         "categories": {
-            "stocks": {"percentage": pct(stocks_val, float(portfolio_total)), "value": stocks_val},
-            "bonds": {"percentage": pct(bonds_val, float(portfolio_total)), "value": bonds_val},
-            "realEstate": {"percentage": pct(real_estate_val, float(portfolio_total)), "value": real_estate_val},
-            "cash": {"percentage": pct(cash_val, float(portfolio_total)), "value": cash_val}
+            "stocks": {"percentage": pct(stocks_val, float(portfolio_total) + real_estate_val), "value": stocks_val},
+            "bonds": {"percentage": pct(bonds_val, float(portfolio_total) + real_estate_val), "value": bonds_val},
+            "realEstate": {"percentage": pct(real_estate_val, float(portfolio_total) + real_estate_val), "value": real_estate_val},
+            "cash": {"percentage": pct(cash_val, float(portfolio_total) + real_estate_val), "value": cash_val}
         }
     }
     
+    # Fix total update
+    portfolio_allocation["total"] = float(portfolio_total) + real_estate_val
+
+    # Generate Recommendations
+    recommendations = RecommendationEngine.generate_recommendations(current_user, plan, portfolio_allocation)
+
     # Use target_lookup_age for the response if plan exists
     display_target_age = target_lookup_age if plan else 65
     
     return {
-        "retirementReadiness": {
-            "score": readiness_score,
+        "retirementTarget": {
+            "targetAmount": int(retirement_target_amount),
+            "currentAmount": int(current_amount),
+            "progressPercentage": progress_pct,
             "targetRetirementAge": display_target_age
         },
         "monthlyIncome": {
@@ -143,16 +172,7 @@ async def get_dashboard(
             "monthlyAmount": int(savings_rate_amt)
         },
         "portfolioAllocation": portfolio_allocation,
-        "recommendations": [
-            {
-                "id": "rec_1", 
-                "title": "Increase 401(k) Contribution", 
-                "description": "You are currently below the annual max.",
-                "category": "saving",
-                "impact": "high",
-                "status": "active"
-            }
-        ],
+        "recommendations": recommendations,
         "resources": [
             {
                 "id": "res_1",
