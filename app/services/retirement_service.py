@@ -64,7 +64,7 @@ class RetirementService:
 
         # Persistence
         await self.create_annual_snapshots(plan, projections)
-        await self.create_standard_milestones(plan)
+        # await self.create_standard_milestones(plan)
         
         # Update plan totalLifetimeTax
         total_lifetime_tax = sum(p['taxesPaid'] for p in projections)

@@ -4,9 +4,11 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api import deps
 from app.models import User, RetirementPlan, AnnualSnapshot, Milestone
+from app.models.retirement import AnnualSnapshotRead
 from app.services.retirement_service import RetirementService
 
 router = APIRouter()
@@ -16,7 +18,7 @@ async def get_retirement_plans(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
-    result = await db.execute(select(RetirementPlan).where(RetirementPlan.userId == current_user.id))
+    result = await db.execute(select(RetirementPlan).where(RetirementPlan.userId == current_user.id).order_by(RetirementPlan.createdAt.desc()))
     return result.scalars().all()
 
 @router.post("/", response_model=RetirementPlan)
@@ -125,7 +127,12 @@ async def get_full_retirement_plan(
         raise HTTPException(status_code=403, detail="Not authorized")
         
     # Snapshots
-    stmt = select(AnnualSnapshot).where(AnnualSnapshot.planId == plan_id).order_by(AnnualSnapshot.year)
+    stmt = select(AnnualSnapshot).where(AnnualSnapshot.planId == plan_id).options(
+        selectinload(AnnualSnapshot.assets),
+        selectinload(AnnualSnapshot.liabilities),
+        selectinload(AnnualSnapshot.income),
+        selectinload(AnnualSnapshot.expenses)
+    ).order_by(AnnualSnapshot.year)
     result_s = await db.execute(stmt)
     snapshots = result_s.scalars().all()
     
@@ -137,8 +144,9 @@ async def get_full_retirement_plan(
     
     # Return FLATTENED object to match frontend expectations
     # { ...plan, snapshots, milestones }
+    print(f"DEBUG: Snapshot 0 assets: {snapshots[0].assets if snapshots else 'No snapshots'}")
     response = plan.model_dump()
-    response["snapshots"] = snapshots
+    response["snapshots"] = [AnnualSnapshotRead.model_validate(s) for s in snapshots]
     response["milestones"] = milestones
     return response
 
@@ -150,10 +158,12 @@ async def generate_primary_plan(
 ):
     # Logic to create/replace primary plan
     # 1. Delete existing P plan
+    # 1. Delete ALL existing P plans to prevent duplicates
     result = await db.execute(select(RetirementPlan).where(RetirementPlan.userId == current_user.id, RetirementPlan.planType == 'P'))
-    existing_primary = result.scalars().first()
-    if existing_primary:
-        await db.delete(existing_primary)
+    existing_primary_plans = result.scalars().all()
+    for p in existing_primary_plans:
+        await db.delete(p)
+    if existing_primary_plans:
         await db.commit()
         
     # 2. Create new plan
@@ -207,7 +217,12 @@ async def generate_primary_plan(
     await service.generate_retirement_plan(plan_data)
     
     # Reload snapshots and milestones for full response
-    stmt = select(AnnualSnapshot).where(AnnualSnapshot.planId == plan_data.id).order_by(AnnualSnapshot.year)
+    stmt = select(AnnualSnapshot).where(AnnualSnapshot.planId == plan_data.id).options(
+        selectinload(AnnualSnapshot.assets),
+        selectinload(AnnualSnapshot.liabilities),
+        selectinload(AnnualSnapshot.income),
+        selectinload(AnnualSnapshot.expenses)
+    ).order_by(AnnualSnapshot.year)
     result_s = await db.execute(stmt)
     snapshots = result_s.scalars().all()
     
@@ -218,7 +233,7 @@ async def generate_primary_plan(
     
     # Return FLATTENED response here too if consistent
     response = plan_data.model_dump()
-    response["snapshots"] = snapshots
+    response["snapshots"] = [AnnualSnapshotRead.model_validate(s) for s in snapshots]
     response["milestones"] = milestones
     # message is extra, usually ignored by typed frontend or handled specially
     # Frontend query for /generate unlikely expects full plan details in return value used for navigation?
@@ -228,7 +243,7 @@ async def generate_primary_plan(
     response["message"] = "Primary plan generated"
     return response
 
-@router.get("/{plan_id}/year/{year}")
+@router.get("/{plan_id}/year/{year}", response_model=AnnualSnapshotRead)
 async def get_retirement_plan_snapshot(
     plan_id: UUID,
     year: int,
@@ -244,7 +259,12 @@ async def get_retirement_plan_snapshot(
         raise HTTPException(status_code=403, detail="Not authorized")
         
     # Fetch Snapshot
-    stmt = select(AnnualSnapshot).where(AnnualSnapshot.planId == plan_id, AnnualSnapshot.year == year)
+    stmt = select(AnnualSnapshot).where(AnnualSnapshot.planId == plan_id, AnnualSnapshot.year == year).options(
+        selectinload(AnnualSnapshot.assets),
+        selectinload(AnnualSnapshot.liabilities),
+        selectinload(AnnualSnapshot.income),
+        selectinload(AnnualSnapshot.expenses)
+    )
     result_s = await db.execute(stmt)
     snapshot = result_s.scalars().first()
     

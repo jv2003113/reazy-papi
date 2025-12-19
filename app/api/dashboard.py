@@ -81,8 +81,18 @@ async def get_dashboard(
         # Readiness
         readiness_score = 75 
         
-        # Projected Monthly Income (at retirement)
-        stmt = select(AnnualSnapshot).where(AnnualSnapshot.planId == plan.id, AnnualSnapshot.age == plan.retirementAge)
+        # Projected Monthly Income (at retirement - when BOTH are retired if couple)
+        # Determine the year (relative to now) when the last person retires
+        years_to_primary_ret = plan.retirementAge - plan.startAge
+        years_to_spouse_ret = 0
+        
+        if plan.spouseRetirementAge and plan.spouseStartAge:
+             years_to_spouse_ret = plan.spouseRetirementAge - plan.spouseStartAge
+             
+        years_to_full_retirement = max(years_to_primary_ret, years_to_spouse_ret)
+        target_lookup_age = plan.startAge + years_to_full_retirement
+        
+        stmt = select(AnnualSnapshot).where(AnnualSnapshot.planId == plan.id, AnnualSnapshot.age == target_lookup_age)
         snap_res = await db.execute(stmt)
         snap = snap_res.scalars().first()
         if snap:
@@ -113,17 +123,20 @@ async def get_dashboard(
         }
     }
     
+    # Use target_lookup_age for the response if plan exists
+    display_target_age = target_lookup_age if plan else 65
+    
     return {
         "retirementReadiness": {
             "score": readiness_score,
-            "targetRetirementAge": plan.retirementAge if plan else 65
+            "targetRetirementAge": display_target_age
         },
         "monthlyIncome": {
             "projected": int(projected_income),
             "goal": int(float(current_user.currentIncome or 0) * 0.8 / 12),
             "percentOfCurrent": int(projected_income / (float(current_user.currentIncome or 1)/12) * 100),
-            "description": "Projected monthly income at retirement",
-            "targetYear": (datetime.now().year + (plan.retirementAge - (current_user.currentAge or 30))) if plan else 2055
+            "description": "Projected monthly income at retirement (full)",
+            "targetYear": (datetime.now().year + (display_target_age - (current_user.currentAge or 30))) if plan else 2055
         },
         "savingsRate": {
             "percentage": savings_rate_pct,

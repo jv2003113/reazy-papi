@@ -31,6 +31,7 @@ class RetirementPlanBase(SQLModel):
     portfolioGrowthRate: Decimal = Field(default=7.0, max_digits=5, decimal_places=2, sa_column_kwargs={"name": "portfolio_growth_rate"})
     inflationRate: Decimal = Field(default=3.0, max_digits=5, decimal_places=2, sa_column_kwargs={"name": "inflation_rate"})
 
+
     # Retirement Income Sources
     pensionIncome: Decimal = Field(default=0, max_digits=10, decimal_places=2, sa_column_kwargs={"name": "pension_income"})
     spousePensionIncome: Decimal = Field(default=0, max_digits=10, decimal_places=2, sa_column_kwargs={"name": "spouse_pension_income"})
@@ -85,7 +86,7 @@ class AnnualSnapshot(AnnualSnapshotBase, table=True):
     plan: RetirementPlan = Relationship(back_populates="snapshots")
     assets: List["AnnualSnapshotAsset"] = Relationship(back_populates="snapshot", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
     liabilities: List["AnnualSnapshotLiability"] = Relationship(back_populates="snapshot", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
-    incomes: List["AnnualSnapshotIncome"] = Relationship(back_populates="snapshot", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
+    income: List["AnnualSnapshotIncome"] = Relationship(back_populates="snapshot", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
     expenses: List["AnnualSnapshotExpense"] = Relationship(back_populates="snapshot", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
 
 # Snapshot Children
@@ -121,7 +122,7 @@ class AnnualSnapshotIncome(SQLModel, table=True):
     source: str
     amount: Decimal = Field(default=0, max_digits=12, decimal_places=2)
 
-    snapshot: AnnualSnapshot = Relationship(back_populates="incomes")
+    snapshot: AnnualSnapshot = Relationship(back_populates="income")
 
 class AnnualSnapshotExpense(SQLModel, table=True):
     __tablename__ = "annual_snapshots_expenses"
@@ -131,3 +132,15 @@ class AnnualSnapshotExpense(SQLModel, table=True):
     amount: Decimal = Field(default=0, max_digits=12, decimal_places=2)
 
     snapshot: AnnualSnapshot = Relationship(back_populates="expenses")
+
+
+# Read Models for API Responses
+
+class AnnualSnapshotRead(AnnualSnapshotBase):
+    id: UUID
+    createdAt: datetime
+    assets: List[AnnualSnapshotAsset] = []
+    liabilities: List[AnnualSnapshotLiability] = []
+    income: List[AnnualSnapshotIncome] = []
+    expenses: List[AnnualSnapshotExpense] = []
+
