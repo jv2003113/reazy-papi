@@ -10,6 +10,7 @@ from app.api import deps
 from app.database import get_db
 from app.models.user import User
 from app.models.retirement import RetirementPlan, AnnualSnapshot
+from app.models.goal import UserGoal, RefGoal
 from app.services.recommendation_engine import RecommendationEngine
 
 router = APIRouter()
@@ -21,6 +22,7 @@ class Recommendation(BaseModel):
     category: str
     impact: str
     status: str
+    suggestedRefGoalTitle: str | None = None
 
 class Resource(BaseModel):
     id: str
@@ -147,8 +149,24 @@ async def get_dashboard(
     # Fix total update
     portfolio_allocation["total"] = float(portfolio_total) + real_estate_val
 
+
+
+    # Fetch User Active Goals Titles for filtering recommendations
+    goals_stmt = (
+        select(RefGoal.title)
+        .join(UserGoal, UserGoal.refGoalId == RefGoal.id)
+        .where(UserGoal.userId == current_user.id)
+    )
+    goals_res = await db.execute(goals_stmt)
+    active_goal_titles = goals_res.scalars().all()
+
     # Generate Recommendations
-    recommendations = RecommendationEngine.generate_recommendations(current_user, plan, portfolio_allocation)
+    recommendations = RecommendationEngine.generate_recommendations(
+        current_user, 
+        plan, 
+        portfolio_allocation, 
+        active_goal_titles=active_goal_titles
+    )
 
     # Use target_lookup_age for the response if plan exists
     display_target_age = target_lookup_age if plan else 65

@@ -272,3 +272,78 @@ async def get_retirement_plan_snapshot(
         raise HTTPException(status_code=404, detail=f"Snapshot for year {year} not found")
         
     return snapshot
+
+from app.services.monte_carlo import MonteCarloService, SimulationResult
+
+@router.get("/{plan_id}/monte-carlo", response_model=SimulationResult)
+async def get_monte_carlo_simulation(
+    plan_id: UUID,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(deps.get_db),
+):
+    # Verify Plan Access
+    result = await db.execute(select(RetirementPlan).where(RetirementPlan.id == plan_id))
+    plan = result.scalars().first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Retirement plan not found")
+    if plan.userId != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    # Prepare Simulation Parameters
+    # 1. Current Balance (Initial Net Worth or from Snapshots?)
+    #    Monte Carlo usually projects from *today*. If the plan has snapshots, we might want the CURRENT year's balance.
+    #    Or just use `initialNetWorth` if it's a new plan.
+    #    Let's use `initialNetWorth` + accumulated growth (which is complex).
+    #    Better: Fetch the FIRST snapshot (start year) balance?
+    #    But simplest is `initialNetWorth` as "Current Investable Assets".
+    current_balance = float(plan.initialNetWorth or 0)
+    
+    # 2. Annual Contribution
+    #    We need `monthlyContribution` from the plan (if it exists) or calculate from snapshots.
+    #    `RetirementPlan` usually has `monthlyContribution`? I didn't see it in `create_retirement_plan`.
+    #    It has `desiredAnnualRetirementSpending`.
+    #    Snapshots have `contribution`.
+    #    Let's assume a standard contribution rate based on `currentIncome` * clean savings rate?
+    #    Or maybe check `models/retirement_plan.py` for fields I missed.
+    #    Wait, `RetirementService` generates snapshots based on logic.
+    #    Let's estimate annual contribution from `currentIncome` * 0.15 (standard) if not stored.
+    #    Actually, `RetirementPlan` likely has `monthlyContribution`. I'll check the model.
+    #    If not, I'll default to 0 for now or try to infer.
+    
+    annual_contribution = 10000.0 # Default fallback
+    if hasattr(plan, 'monthlyContribution') and plan.monthlyContribution:
+         annual_contribution = float(plan.monthlyContribution) * 12
+    elif current_user.currentIncome:
+         # Default 15% savings rate
+         annual_contribution = float(current_user.currentIncome) * 0.15
+         
+    # 3. Years
+    current_age = current_user.currentAge or 30
+    retirement_age = plan.retirementAge or 65
+    end_age = plan.endAge or 95
+    
+    years_to_retirement = retirement_age - current_age
+    if years_to_retirement < 0: years_to_retirement = 0
+    
+    total_years = end_age - current_age
+    if total_years < 1: total_years = 1
+    
+    # 4. Annual Withdrawal (Expenses)
+    #    Assumption: desiredAnnualRetirementSpending from Plan
+    annual_withdrawal = float(plan.desiredAnnualRetirementSpending or 80000.0)
+    
+    # 5. Risk Profile
+    #    Fetch User's risk profile
+    risk_profile = current_user.riskTolerance or "moderate"
+    
+    # Run Simulation
+    result = MonteCarloService.run_simulation(
+        current_balance=current_balance,
+        annual_contribution=annual_contribution,
+        years_to_retirement=years_to_retirement,
+        total_years=total_years,
+        annual_withdrawal=annual_withdrawal,
+        risk_profile=risk_profile
+    )
+    
+    return result

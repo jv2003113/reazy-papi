@@ -4,7 +4,12 @@ from app.models.retirement import RetirementPlan, AnnualSnapshot
 
 class RecommendationEngine:
     @staticmethod
-    def generate_recommendations(user: User, plan: RetirementPlan, current_portfolio_allocation: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def generate_recommendations(
+        user: User, 
+        plan: RetirementPlan, 
+        current_portfolio_allocation: Dict[str, Any],
+        active_goal_titles: List[str] = []
+    ) -> List[Dict[str, Any]]:
         recommendations = []
         
         # 1. Savings Rate Analysis
@@ -38,32 +43,36 @@ class RecommendationEngine:
             })
             
         # 2. Emergency Fund Analysis
-        cash = float(user.savingsBalance or 0) + float(user.checkingBalance or 0)
-        monthly_expenses = float(user.totalMonthlyExpenses or 4000) # Default to 4000 if not set
-        months_covered = cash / monthly_expenses if monthly_expenses > 0 else 0
-        
-        if months_covered < 3:
-             recommendations.append({
-                "id": "rec_emergency_fund",
-                "title": "Build Emergency Fund",
-                "description": f"You have {int(months_covered)} months of expenses saved. We recommend keeping 3-6 months liquid for emergencies.",
-                "category": "risk",
-                "impact": "high",
-                "status": "active"
-            })
+        if "Emergency Fund" not in active_goal_titles:
+            cash = float(user.savingsBalance or 0) + float(user.checkingBalance or 0)
+            monthly_expenses = float(user.totalMonthlyExpenses or 4000) # Default to 4000 if not set
+            months_covered = cash / monthly_expenses if monthly_expenses > 0 else 0
+            
+            if months_covered < 3:
+                 recommendations.append({
+                    "id": "rec_emergency_fund",
+                    "title": "Build Emergency Fund",
+                    "description": f"You have {int(months_covered)} months of expenses saved. We recommend keeping 3-6 months liquid for emergencies.",
+                    "category": "risk",
+                    "impact": "high",
+                    "status": "active",
+                    "suggestedRefGoalTitle": "Emergency Fund"
+                })
             
         # 3. 401k Contribution Analysis
-        # 2024 Limit is 23,000 (standard). We'll use a simplified check.
-        annual_401k = float(user.retirementAccount401kContribution or 0)
-        if annual_401k < 23000 and annual_401k > 0:
-             recommendations.append({
-                "id": "rec_401k_max",
-                "title": "Maximize 401(k)",
-                "description": f"You are contributing ${int(annual_401k):,} annually. Consider increasing up to the $23,000 IRS limit to lower your taxable income.",
-                "category": "tax",
-                "impact": "medium",
-                "status": "active"
-            })
+        if "Max 401(k)" not in active_goal_titles:
+            # 2024 Limit is 23,000 (standard). We'll use a simplified check.
+            annual_401k = float(user.retirementAccount401kContribution or 0)
+            if annual_401k < 23000 and annual_401k > 0:
+                 recommendations.append({
+                    "id": "rec_401k_max",
+                    "title": "Maximize 401(k)",
+                    "description": f"You are contributing ${int(annual_401k):,} annually. Consider increasing up to the $23,000 IRS limit to lower your taxable income.",
+                    "category": "tax",
+                    "impact": "medium",
+                    "status": "active",
+                    "suggestedRefGoalTitle": "Max 401(k)"
+                })
             
         # 4. Asset Allocation Check
         # Rule of thumb: 110 - Age = Stock Allocation %
