@@ -10,6 +10,18 @@ class RecommendationEngine:
         current_portfolio_allocation: Dict[str, Any],
         active_goal_titles: List[str] = []
     ) -> List[Dict[str, Any]]:
+        """
+        Analyzes the user's financial profile to generate actionable recommendations.
+
+        Checks performed:
+        1. Savings Rate: Is the user saving enough (>15-20% of income)?
+        2. Emergency Fund: Is there 3-6 months of liquid cash available?
+        3. Tax Efficiency: Is the user maximizing 401(k) tax-advantaged space?
+        4. Asset Allocation: Is the stock/bond split appropriate for the user's age (110 - age rule)?
+
+        Returns:
+            List[Dict]: A list of recommendation objects containing title, description, and impact level.
+        """
         recommendations = []
         
         # 1. Savings Rate Analysis

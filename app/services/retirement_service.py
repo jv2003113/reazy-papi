@@ -21,6 +21,15 @@ from app.models import (
 from app.models.retirement import RetirementPlanBase
 
 class RetirementService:
+    """
+    Service class responsible for business logic related to retirement planning.
+    
+    This service handles:
+    1. Orchestrating the generation of retirement plans.
+    2. Calculating year-by-year financial projections (income, expenses, assets, liabilities).
+    3. Persisting these projections as 'snapshots' in the database.
+    4. Managing lifecycle of plan data (clearing old data before regeneration).
+    """
     def __init__(self, session: AsyncSession):
         self.session = session
         
@@ -51,6 +60,22 @@ class RetirementService:
         await self.session.commit()
 
     async def generate_retirement_plan(self, plan: RetirementPlan):
+        """
+        Main entry point for generating a retirement plan.
+
+        Steps:
+        1. Validates the user exists.
+        2. Clears any existing snapshot/milestone data for this plan ID to ensure a clean slate.
+        3. Calls `calculate_financial_projections` to run the simulation in memory.
+        4. Calls `create_annual_snapshots` to save the results to the database.
+        5. Updates the parent Plan record with summary stats (e.g. Total Lifetime Tax).
+        
+        Args:
+            plan (RetirementPlan): The plan object containing parameters (ages, rates, etc.).
+            
+        Returns:
+            RetirementPlan: The updated plan object.
+        """
         # Fetch user
         user = await self.get_user_by_id(plan.userId)
         if not user:
@@ -76,6 +101,35 @@ class RetirementService:
         return plan
 
     def calculate_financial_projections(self, plan: RetirementPlan, user: User) -> List[Dict[str, Any]]:
+        """
+        Core simulation engine. Calculates financial state for every year from startAge to endAge.
+
+        Logic:
+        - Iterates through each year/age.
+        - Determines if user is in 'Working' or 'Retired' phase based on `plan.retirementAge`.
+        - Calculates Income:
+            - Working: Salary (inflated).
+            - Retired: Social Security + Pension (inflated).
+            - Other: Additional income sources.
+        - Calculates Expenses:
+            - Inflates base expenses year-over-year.
+        - Calculates Contributions (Working Phase):
+            - 401k/IRA limits applied.
+            - Spillover goes to Brokerage/Savings.
+            - HSA contributions added.
+        - Calculates Withdrawals (Retired Phase):
+            - Covers expense deficits from various accounts (401k, Brokerage, etc.).
+        - Applies Investment Growth:
+            - Compound growth on assets (Portfolio Rate for stocks, Bond Rate for cash).
+        - Tracks Net Worth, Assets, Liabilities.
+
+        Args:
+            plan (RetirementPlan): Plan assumptions (growth rates, retirement age).
+            user (User): Current financial starting point (balances, salaries).
+
+        Returns:
+            List[Dict]: A list of dictionary objects representing the financial state for each year.
+        """
         projections = []
         current_year = datetime.now().year
         
@@ -87,7 +141,9 @@ class RetirementService:
         total_401k = float(user.retirementAccount401k or 0) + float(user.retirementAccountIRA or 0)
         total_roth_ira = float(user.retirementAccountRoth or 0)
         total_brokerage = float(user.investmentBalance or 0)
+        total_brokerage = float(user.investmentBalance or 0)
         total_savings = float(user.savingsBalance or 0) + float(user.checkingBalance or 0)
+        total_hsa = float(user.hsaBalance or 0) + float(user.spouseHsaBalance or 0)
         
         mortgage_balance = float(user.mortgageBalance or 0)
         mortgage_payment_annual = float(user.mortgagePayment or 0) * 12 # User stores monthly? Schema says mortgagePayment is decimal. Usually monthly.
@@ -185,12 +241,16 @@ class RetirementService:
             contribution_401k = 0.0
             contribution_roth_ira = 0.0
             contribution_brokerage = 0.0
+            contribution_brokerage = 0.0
             contribution_savings = 0.0
+            contribution_hsa = 0.0
             
             withdrawal_401k = 0.0
             withdrawal_roth_ira = 0.0
             withdrawal_brokerage = 0.0
+            withdrawal_brokerage = 0.0
             withdrawal_savings = 0.0
+            withdrawal_hsa = 0.0
             
             if is_working_age:
                 # Contributions
@@ -201,6 +261,11 @@ class RetirementService:
                 remaining_income = net_income - total_expenses - contribution_401k - contribution_roth_ira
                 contribution_brokerage = max(0, remaining_income * 0.7)
                 contribution_savings = max(0, remaining_income * 0.3)
+                
+                # HSA Contribution (User + Spouse)
+                hsa_contrib_user = float(user.hsaContribution or 0)
+                hsa_contrib_spouse = float(user.spouseHsaContribution or 0)
+                contribution_hsa = hsa_contrib_user + hsa_contrib_spouse
             else:
                 # Withdrawals
                 fixed_income = social_security_income + pension_income
@@ -210,6 +275,11 @@ class RetirementService:
                     withdrawal_401k = deficit * 0.4
                     withdrawal_roth_ira = deficit * 0.2
                     withdrawal_brokerage = deficit * 0.4
+                    # Only withdraw from HSA for "Health Expenses" if we had them separated, 
+                    # for now assume it acts like a tax-advantaged account we tap last or specifically?
+                    # Let's keep it simple: grow it, but don't auto-tap it for general deficit yet unless needed?
+                    # Or treat it like Roth?
+                    # Let's just grow it for net worth purposes as per request "shown in breakdown".
                 
                 # Recalculate gross mainly for tax purposes if needed, but TS logic reused grossIncome variable
                 # "grossIncome = fixedIncome + withdrawal401k..." 
@@ -222,6 +292,7 @@ class RetirementService:
             total_roth_ira = (total_roth_ira + contribution_roth_ira - withdrawal_roth_ira) * (1 + portfolio_growth_rate)
             total_brokerage = (total_brokerage + contribution_brokerage - withdrawal_brokerage) * (1 + portfolio_growth_rate)
             total_savings = (total_savings + contribution_savings) * (1 + bond_growth_rate)
+            total_hsa = (total_hsa + contribution_hsa - withdrawal_hsa) * (1 + portfolio_growth_rate) # Assuming invested HSA
             
             # Mortgage
             current_mortgage_payment = 0.0
@@ -242,9 +313,10 @@ class RetirementService:
             
             # Taxes
             taxes_paid = gross_income * 0.25 if is_working_age else gross_income * 0.15
+            taxes_paid = gross_income * 0.25 if is_working_age else gross_income * 0.15
             cumulative_tax += taxes_paid
             
-            total_assets = total_401k + total_roth_ira + total_brokerage + total_savings
+            total_assets = total_401k + total_roth_ira + total_brokerage + total_savings + total_hsa
             total_liabilities = mortgage_balance + credit_card_debt + student_loan_debt + other_debt
             net_worth = total_assets - total_liabilities
             
@@ -260,13 +332,14 @@ class RetirementService:
                 "netWorth": net_worth,
                 "taxesPaid": taxes_paid,
                 "cumulativeTax": cumulative_tax,
-                
-                "assets": [
-                    {"name": "Company 401(k)", "type": "401k", "balance": total_401k, "growth": total_401k * portfolio_growth_rate, "contribution": contribution_401k, "withdrawal": withdrawal_401k},
-                    {"name": "Roth IRA", "type": "roth_ira", "balance": total_roth_ira, "growth": total_roth_ira * portfolio_growth_rate, "contribution": contribution_roth_ira, "withdrawal": withdrawal_roth_ira},
-                    {"name": "Taxable Brokerage", "type": "brokerage", "balance": total_brokerage, "growth": total_brokerage * portfolio_growth_rate, "contribution": contribution_brokerage, "withdrawal": withdrawal_brokerage},
-                    {"name": "Savings Account", "type": "savings", "balance": total_savings, "growth": total_savings * bond_growth_rate, "contribution": contribution_savings, "withdrawal": withdrawal_savings},
-                ],
+              # Store Asset Breakdown for this year
+            "assets": [
+                {"name": "401(k) / IRA", "type": "retirement", "balance": total_401k, "growth": total_401k * portfolio_growth_rate, "contribution": contribution_401k, "withdrawal": withdrawal_401k},
+                {"name": "Roth IRA", "type": "retirement", "balance": total_roth_ira, "growth": total_roth_ira * portfolio_growth_rate, "contribution": contribution_roth_ira, "withdrawal": withdrawal_roth_ira},
+                {"name": "Brokerage", "type": "investment", "balance": total_brokerage, "growth": total_brokerage * portfolio_growth_rate, "contribution": contribution_brokerage, "withdrawal": withdrawal_brokerage},
+                {"name": "Savings", "type": "cash", "balance": total_savings, "growth": total_savings * bond_growth_rate, "contribution": contribution_savings, "withdrawal": withdrawal_savings},
+                {"name": "HSA", "type": "hsa", "balance": total_hsa, "growth": total_hsa * portfolio_growth_rate, "contribution": contribution_hsa, "withdrawal": withdrawal_hsa},
+            ],
                 "liabilities": [],
                 "income": [],
                 "expenses": projected_expenses_list + [{"category": "Taxes", "amount": taxes_paid}]
@@ -286,6 +359,17 @@ class RetirementService:
         return projections
 
     async def create_annual_snapshots(self, plan: RetirementPlan, projections: List[Dict[str, Any]]):
+        """
+        Persists the calculated projections to the database.
+
+        Creates `AnnualSnapshot` records for each year, and associated child records:
+        - `AnnualSnapshotAsset`
+        - `AnnualSnapshotLiability`
+        - `AnnualSnapshotIncome`
+        - `AnnualSnapshotExpense`
+
+        This allows the frontend to query detailed breakdowns for any specific year.
+        """
         for p in projections:
             snapshot = AnnualSnapshot(
                 planId=plan.id,

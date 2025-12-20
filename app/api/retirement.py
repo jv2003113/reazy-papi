@@ -14,10 +14,14 @@ from app.services.retirement_service import RetirementService
 router = APIRouter()
 
 @router.get("/", response_model=List[RetirementPlan])
+@router.get("/", response_model=List[RetirementPlan])
 async def get_retirement_plans(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
+    """
+    List all retirement plans for the authenticated user.
+    """
     result = await db.execute(select(RetirementPlan).where(RetirementPlan.userId == current_user.id).order_by(RetirementPlan.createdAt.desc()))
     return result.scalars().all()
 
@@ -45,12 +49,24 @@ async def create_retirement_plan(
     
     return plan_data
 
+"""
+Creates a new retirement plan.
+
+- Enforces a maximum limit of 4 plans per user.
+- Automatically triggers the generation of financial projections upon creation.
+"""
+
+@router.get("/{plan_id}", response_model=RetirementPlan)
 @router.get("/{plan_id}", response_model=RetirementPlan)
 async def get_retirement_plan(
     plan_id: UUID,
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
+    """
+    Fetch a specific retirement plan by ID.
+    Enforces ownership check.
+    """
     result = await db.execute(select(RetirementPlan).where(RetirementPlan.id == plan_id))
     plan = result.scalars().first()
     if not plan:
@@ -143,12 +159,22 @@ async def get_full_retirement_plan(
     
     
     # Return FLATTENED object to match frontend expectations
+    # Return FLATTENED object to match frontend expectations
     # { ...plan, snapshots, milestones }
     print(f"DEBUG: Snapshot 0 assets: {snapshots[0].assets if snapshots else 'No snapshots'}")
     response = plan.model_dump()
     response["snapshots"] = [AnnualSnapshotRead.model_validate(s) for s in snapshots]
     response["milestones"] = milestones
     return response
+
+"""
+Fetches the 'full' retirement plan including all nested data:
+- Annual Snapshots
+- Asset/Liability/Income/Expense breakdowns per year
+- Milestones
+
+This is used for the detailed Retirement Plan Timeline view.
+"""
 
 @router.post("/generate")
 async def generate_primary_plan(
@@ -242,6 +268,14 @@ async def generate_primary_plan(
     # For safety, let's keep message separate if possible or add to dict.
     response["message"] = "Primary plan generated"
     return response
+
+"""
+Generates the 'Primary' retirement plan from User Profile data.
+
+- Unlike ad-hoc plans, there is only ONE Primary plan per user.
+- Calling this endpoint REPLACES the existing Primary plan.
+- Calculates initial net worth from current user balances.
+"""
 
 @router.get("/{plan_id}/year/{year}", response_model=AnnualSnapshotRead)
 async def get_retirement_plan_snapshot(

@@ -55,6 +55,12 @@ class UserGoalRead(BaseModel):
 async def get_ref_goals(
     db: AsyncSession = Depends(get_db)
 ) -> Any:
+    """
+    Fetch the list of standard 'Reference Goals' available to all users.
+    
+    Examples: 'Emergency Fund', 'Max 401(k)', 'Pay Off Debt'.
+    If the table is empty, this endpoint seeds it with default values.
+    """
     stmt = select(RefGoal).where(RefGoal.isActive == True)
     result = await db.execute(stmt)
     goals = result.scalars().all()
@@ -84,6 +90,14 @@ async def get_user_goals(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> Any:
+    """
+    Fetch all goals belonging to the current user.
+    
+    Key Logic:
+    - This endpoint returns DYNAMIC data. 
+    - It calls `GoalCalculator.calculate_current_progress` for each goal to ensure 
+      the `currentAmount` reflects the user's latest financial data (e.g. real-time savings balance).
+    """
     # Fetch user goals with RefGoal relationship eagerly if possible, or join
     # SQLModel relationships are async, easier to join manually or assume strict fetching.
     # We'll use a join for efficiency or just fetch. 
@@ -134,6 +148,13 @@ async def create_user_goal(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> Any:
+    """
+    Create a new goal for the user.
+    
+    If `refGoalId` is provided (Standard Goal), it uses `GoalCalculator` to:
+    - Determine a smart default `targetAmount` (e.g. 6 months expenses or IRS limit).
+    - Determine the initial `currentAmount`.
+    """
     # 1. Calculate Initial Values if RefGoal is present
     initial_current = 0.0
     initial_target = 0.0

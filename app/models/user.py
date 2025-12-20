@@ -50,6 +50,13 @@ class UserBase(SQLModel):
     retirementAccountIRAContribution: Optional[Decimal] = Field(default=0, max_digits=12, decimal_places=2, sa_column_kwargs={"name": "retirement_account_ira_contribution"})
     retirementAccountRoth: Optional[Decimal] = Field(default=0, max_digits=15, decimal_places=2, sa_column_kwargs={"name": "retirement_account_roth"})
     retirementAccountRothContribution: Optional[Decimal] = Field(default=0, max_digits=12, decimal_places=2, sa_column_kwargs={"name": "retirement_account_roth_contribution"})
+    
+    # HSA
+    hsaBalance: Optional[Decimal] = Field(default=0, max_digits=15, decimal_places=2, sa_column_kwargs={"name": "hsa_balance"})
+    hsaContribution: Optional[Decimal] = Field(default=0, max_digits=12, decimal_places=2, sa_column_kwargs={"name": "hsa_contribution"})
+    spouseHsaBalance: Optional[Decimal] = Field(default=0, max_digits=15, decimal_places=2, sa_column_kwargs={"name": "spouse_hsa_balance"})
+    spouseHsaContribution: Optional[Decimal] = Field(default=0, max_digits=12, decimal_places=2, sa_column_kwargs={"name": "spouse_hsa_contribution"})
+
     realEstateValue: Optional[Decimal] = Field(default=0, max_digits=15, decimal_places=2, sa_column_kwargs={"name": "real_estate_value"})
     otherAssetsValue: Optional[Decimal] = Field(default=0, max_digits=15, decimal_places=2, sa_column_kwargs={"name": "other_assets_value"})
     

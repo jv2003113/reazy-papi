@@ -20,7 +20,19 @@ class MonteCarloService:
         num_simulations: int = 1000
     ) -> SimulationResult:
         """
-        Runs a Monte Carlo simulation for investment growth and drawdown.
+        Runs a Monte Carlo simulation to project future portfolio outcomes.
+        
+        This method performs `num_simulations` iterations of possible market returns based on the 
+        selected `risk_profile`. It accounts for annual contributions (accumulation phase) 
+        and withdrawals (retirement phase).
+
+        Args:
+            risk_profile (str): Determines the mean (mu) and volatility (sigma) of returns.
+                - Conservative: Lower growth, lower volatility.
+                - Aggressive: Higher potential growth, higher volatility.
+                
+        Returns:
+            SimulationResult: success rates, median balances, and 10th/90th percentile outcomes.
         """
         # Determine strict market parameters based on risk profile
         profiles = {

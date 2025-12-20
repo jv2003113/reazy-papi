@@ -1,10 +1,25 @@
 from app.models.user import User
 
 class GoalCalculator:
+    """
+    Utility service for dynamically calculating goal progress and targets.
+    
+    This class maps real-time User data (e.g. savings balance, debt amounts) 
+    to specific Goal types (e.g. Emergency Fund, Pay Off Debt).
+    """
     @staticmethod
     def calculate_initial_values(user: User, ref_goal_title: str) -> dict:
         """
-        Calculates the initial currentAmount and targetAmount for a given goal type.
+        Calculates the initial 'currentAmount' and default 'targetAmount' for a new goal.
+        
+        Logic varies by goal type:
+        - Emergency Fund: Target = 6 * Monthly Expenses. Current = Cash + Savings.
+        - Debt: Target = Sum of high-interest debt. Current = 0 (Goal is to pay off).
+        - Retirement: Target = IRS Limits. Current = Contributions.
+        - Health Savings: Target = Arbitrary/Limit. Current = HSA Balance.
+        
+        Returns:
+            dict: {"currentAmount": float, "targetAmount": float}
         """
         result = {"currentAmount": 0.0, "targetAmount": 100.0}
         
@@ -53,14 +68,29 @@ class GoalCalculator:
              # Default target if not set, user can override in UI now
              result["targetAmount"] = 2000.0 
              result["currentAmount"] = float(user.otherIncomeAmount1 or 0) + float(user.otherIncomeAmount2 or 0)
+
+        # 6. HSA Goal
+        elif "health" in title or "hsa" in title:
+             # Default to annual max contribution limit for family (approx 8300 in 2024)? 
+             # Or just a round number like 10k?
+             result["targetAmount"] = 10000.0
+             result["currentAmount"] = float(user.hsaBalance or 0) + float(user.spouseHsaBalance or 0)
              
         return result
 
     @staticmethod
     def calculate_current_progress(user: User, user_goal_target: float, ref_goal_title: str) -> float:
         """
-        Calculates the *current amount* based on live user data.
-        Returns the value to be used for 'currentAmount'.
+        Calculates the *current amount* (progress) based on live user data.
+        
+        This allows goals to auto-update as the user modifies their profile (e.g. updates savings balance).
+        
+        For Debt/Mortgage goals:
+        Progress is calculated as (Initial Target - Current Balance). 
+        This represents the "Amount Paid Off".
+        
+        Returns:
+            float: The calculated current amount.
         """
         if not ref_goal_title:
             return 0.0
@@ -94,5 +124,8 @@ class GoalCalculator:
             
         elif "additional" in title or "income" in title:
              return float(user.otherIncomeAmount1 or 0) + float(user.otherIncomeAmount2 or 0)
+
+        elif "health" in title or "hsa" in title:
+             return float(user.hsaBalance or 0) + float(user.spouseHsaBalance or 0)
 
         return 0.0
