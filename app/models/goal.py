@@ -6,13 +6,13 @@ from uuid6 import uuid7
 from enum import Enum
 
 class GoalType(str, Enum):
-    EMERGENCY_FUND = "emergency_fund"
-    RETIREMENT_401K = "retirement_401k"
-    DEBT_PAYOFF = "debt_payoff"
-    MORTGAGE_PAYOFF = "mortgage_payoff"
-    HEALTH_SAVINGS = "health_savings"
-    ADDITIONAL_INCOME = "additional_income"
-    CUSTOM = "custom"
+    EMERGENCY_FUND = "EMERGENCY_FUND"
+    RETIREMENT_401K = "RETIREMENT_401K"
+    DEBT_PAYOFF = "DEBT_PAYOFF"
+    MORTGAGE_PAYOFF = "MORTGAGE_PAYOFF"
+    HEALTH_SAVINGS = "HEALTH_SAVINGS"
+    ADDITIONAL_INCOME = "ADDITIONAL_INCOME"
+    CUSTOM = "CUSTOM"
 
 # Goals Models
 

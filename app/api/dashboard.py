@@ -64,6 +64,11 @@ async def get_dashboard(
         (current_user.retirementAccountRoth or 0) 
     )
     
+    # Retirement Target & Progress Defaults
+    retirement_target_amount = 0
+    current_amount = float(portfolio_total) # Liquid assets only
+    progress_pct = 0
+
     if plan:
         # Savings Rate
         monthly_income = (float(current_user.currentIncome or 0) +
