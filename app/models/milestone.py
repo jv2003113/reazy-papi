@@ -17,8 +17,8 @@ class MilestoneBase(SQLModel):
     category: Optional[str] = None # retirement, healthcare, financial, family, etc.
     icon: Optional[str] = None
     
-class Milestone(MilestoneBase, table=True):
-    __tablename__ = "milestones"
+class UserMilestone(MilestoneBase, table=True):
+    __tablename__ = "user_milestones"
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     planId: Optional[UUID] = Field(foreign_key="retirement_plans.id", sa_column_kwargs={"name": "plan_id"})
     userId: Optional[UUID] = Field(foreign_key="users.id", sa_column_kwargs={"name": "user_id"})
@@ -30,8 +30,8 @@ class Milestone(MilestoneBase, table=True):
     createdAt: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"name": "created_at"})
 
 
-class StandardMilestone(SQLModel, table=True):
-    __tablename__ = "standard_milestones"
+class RefMilestone(SQLModel, table=True):
+    __tablename__ = "ref_milestones"
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     title: str
     description: str

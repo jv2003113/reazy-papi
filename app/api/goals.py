@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from app.api import deps
 from app.database import get_db
 from app.models.user import User
-from app.models.goal import RefGoal, UserGoal
+from app.models.goal import RefGoal, UserGoal, GoalType
 from app.services.goal_calculator import GoalCalculator
 
 router = APIRouter()
@@ -68,12 +68,12 @@ async def get_ref_goals(
     # Auto-seed if empty (Simple approach for development)
     if not goals:
         defaults = [
-            RefGoal(title="Emergency Fund", description="Save 3-6 months of expenses", category="risk", icon="ShieldCheck", defaultTargetOffset=1),
-            RefGoal(title="Max 401(k)", description="Contribute the maximum annual amount to your 401(k)", category="retirement", icon="Briefcase", defaultTargetOffset=1),
-            RefGoal(title="Pay Off Debt", description="Eliminate high-interest consumer debt", category="financial", icon="CreditCard", defaultTargetOffset=3),
-            RefGoal(title="Pay off Mortgage", description="Pay off remaining mortgage balance", category="lifestyle", icon="Home", defaultTargetOffset=5),
-            RefGoal(title="Health Savings", description="Fund your HSA for medical expenses", category="health", icon="HeartPulse", defaultTargetOffset=1),
-            RefGoal(title="Additional Income", description="Establish sources of additional income", category="investing", icon="TrendingUp", defaultTargetOffset=10),
+            RefGoal(title="Emergency Fund", description="Save 3-6 months of expenses", category="risk", icon="ShieldCheck", defaultTargetOffset=1, type=GoalType.EMERGENCY_FUND),
+            RefGoal(title="Max 401(k)", description="Contribute the maximum annual amount to your 401(k)", category="retirement", icon="Briefcase", defaultTargetOffset=1, type=GoalType.RETIREMENT_401K),
+            RefGoal(title="Pay Off Debt", description="Eliminate high-interest consumer debt", category="financial", icon="CreditCard", defaultTargetOffset=3, type=GoalType.DEBT_PAYOFF),
+            RefGoal(title="Pay off Mortgage", description="Pay off remaining mortgage balance", category="lifestyle", icon="Home", defaultTargetOffset=5, type=GoalType.MORTGAGE_PAYOFF),
+            RefGoal(title="Health Savings", description="Fund your HSA for medical expenses", category="health", icon="HeartPulse", defaultTargetOffset=1, type=GoalType.HEALTH_SAVINGS),
+            RefGoal(title="Additional Income", description="Establish sources of additional income", category="investing", icon="TrendingUp", defaultTargetOffset=10, type=GoalType.ADDITIONAL_INCOME),
         ]
         for g in defaults:
             db.add(g)
@@ -110,7 +110,9 @@ async def get_user_goals(
     for user_goal, ref_goal in rows:
         # Dynamic Recalculation (Display Only)
         if ref_goal:
-             new_current = GoalCalculator.calculate_current_progress(current_user, user_goal.targetAmount or 0, ref_goal.title)
+             # Use ref_goal.type if available, else fallback to parsing title for backward compatibility or simple default
+             goal_type = ref_goal.type if ref_goal.type else GoalType.CUSTOM
+             new_current = GoalCalculator.calculate_current_progress(current_user, user_goal.targetAmount or 0, goal_type)
              user_goal.currentAmount = new_current
              if (user_goal.targetAmount or 0) > 0:
                   progress_val = int((new_current / user_goal.targetAmount) * 100)
@@ -163,7 +165,7 @@ async def create_user_goal(
     if goal_in.refGoalId:
         ref_goal = await db.get(RefGoal, goal_in.refGoalId)
         if ref_goal:
-            calc = GoalCalculator.calculate_initial_values(current_user, ref_goal.title)
+            calc = GoalCalculator.calculate_initial_values(current_user, ref_goal.type)
             initial_current = calc["currentAmount"]
             # Prefer user-supplied target over calculated default
             initial_target = goal_in.targetAmount if goal_in.targetAmount is not None else calc["targetAmount"]

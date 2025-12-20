@@ -3,6 +3,16 @@ from uuid import UUID
 from datetime import datetime
 from sqlmodel import SQLModel, Field, Relationship
 from uuid6 import uuid7
+from enum import Enum
+
+class GoalType(str, Enum):
+    EMERGENCY_FUND = "emergency_fund"
+    RETIREMENT_401K = "retirement_401k"
+    DEBT_PAYOFF = "debt_payoff"
+    MORTGAGE_PAYOFF = "mortgage_payoff"
+    HEALTH_SAVINGS = "health_savings"
+    ADDITIONAL_INCOME = "additional_income"
+    CUSTOM = "custom"
 
 # Goals Models
 
@@ -12,6 +22,8 @@ class RefGoal(SQLModel, table=True):
     title: str
     description: Optional[str] = None
     category: str # "financial", "retirement", "health", etc.
+    category: str # "financial", "retirement", "health", etc.
+    type: GoalType = Field(default=GoalType.CUSTOM) # Strict enum type
     icon: str # Lucide icon name
     defaultTargetOffset: Optional[int] = Field(default=None, sa_column_kwargs={"name": "default_target_offset"}) # Years from now
     

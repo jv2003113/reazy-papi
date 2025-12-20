@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
-from app.models import User, RetirementPlan, AnnualSnapshot, Milestone
+from app.models import User, RetirementPlan, AnnualSnapshot, UserMilestone
 from app.models.retirement import AnnualSnapshotRead
 from app.services.retirement_service import RetirementService
 
@@ -153,7 +153,7 @@ async def get_full_retirement_plan(
     snapshots = result_s.scalars().all()
     
     # Milestones
-    stmt_m = select(Milestone).where(Milestone.planId == plan_id)
+    stmt_m = select(UserMilestone).where(UserMilestone.planId == plan_id)
     result_m = await db.execute(stmt_m)
     milestones = result_m.scalars().all()
     
@@ -252,7 +252,7 @@ async def generate_primary_plan(
     result_s = await db.execute(stmt)
     snapshots = result_s.scalars().all()
     
-    stmt_m = select(Milestone).where(Milestone.planId == plan_data.id)
+    stmt_m = select(UserMilestone).where(UserMilestone.planId == plan_data.id)
     result_m = await db.execute(stmt_m)
     milestones = result_m.scalars().all()
 

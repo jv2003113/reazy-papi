@@ -8,7 +8,7 @@ from .retirement import (
     AnnualSnapshotIncome, 
     AnnualSnapshotExpense
 )
-from .milestone import Milestone, StandardMilestone
+from .milestone import UserMilestone, RefMilestone
 from .investment import InvestmentAccount, AssetAllocation, SecurityHolding
 from .activity import Activity
 from .roth import RothConversionPlan, RothConversionScenario

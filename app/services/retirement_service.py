@@ -16,7 +16,7 @@ from app.models import (
     AnnualSnapshotLiability, 
     AnnualSnapshotIncome, 
     AnnualSnapshotExpense,
-    Milestone
+    UserMilestone
 )
 from app.models.retirement import RetirementPlanBase
 
@@ -51,7 +51,7 @@ class RetirementService:
             await self.session.delete(snapshot)
             
         # Also delete personal milestones for this plan
-        stmt_milestones = select(Milestone).where(Milestone.planId == plan_id)
+        stmt_milestones = select(UserMilestone).where(UserMilestone.planId == plan_id)
         result_milestones = await self.session.execute(stmt_milestones)
         milestones = result_milestones.scalars().all()
         for m in milestones:
@@ -457,7 +457,7 @@ class RetirementService:
         
         for m in milestones:
              if m["targetAge"] >= plan.startAge and m["targetAge"] <= plan.endAge:
-                 ms = Milestone(
+                 ms = UserMilestone(
                      planId=plan.id,
                      userId=plan.userId,
                      milestoneType="personal",
