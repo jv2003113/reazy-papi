@@ -32,7 +32,7 @@ class Settings(BaseSettings):
             return v
         raise ValueError(v)
 
-    CORS_ORIGIN_URLS: list[str] = []
+    CORS_ORIGIN_URLS: list[str] | str = []
 
     # Extra
     PORT: int = 8000
