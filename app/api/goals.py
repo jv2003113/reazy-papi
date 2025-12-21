@@ -9,81 +9,50 @@ from pydantic import BaseModel
 from app.api import deps
 from app.database import get_db
 from app.models.user import User
-from app.models.goal import RefGoal, UserGoal, GoalType
+from app.models.goal import UserGoal
 from app.services.goal_calculator import GoalCalculator
 
 router = APIRouter()
 
-class RefGoalRead(BaseModel):
-    id: UUID
-    title: str
-    description: Optional[str]
-    category: str
-    icon: str
-    defaultTargetOffset: Optional[int]
+# --- Pydantic Schemas ---
 
 class UserGoalCreate(BaseModel):
-    refGoalId: Optional[UUID] = None
-    customTitle: Optional[str] = None
-    customDescription: Optional[str] = None
-    customIcon: Optional[str] = None
-    targetDate: Optional[datetime] = None
+    title: str
+    description: Optional[str] = None
+    category: str = "personal"
+    icon: str = "Target"
+    
     status: str = "in_progress"
-    targetAmount: Optional[float] = None  # Added targetAmount
+    targetAmount: Optional[float] = None  
+    currentAmount: Optional[float] = None # Allow manual setting
+    
+    # Metadata for auto-calculation (optional)
+    goalTypeHint: Optional[str] = None # e.g. "EMERGENCY_FUND"
 
 class UserGoalUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    category: Optional[str] = None
+    icon: Optional[str] = None
     status: Optional[str] = None
     progress: Optional[int] = None
-    targetDate: Optional[datetime] = None
+    targetAmount: Optional[float] = None
+    currentAmount: Optional[float] = None
 
 class UserGoalRead(BaseModel):
     id: UUID
     title: str
     description: Optional[str]
+    category: str
     icon: str
-    category: Optional[str]
     status: str
     progress: int
-    targetDate: Optional[datetime]
-    refGoalId: Optional[UUID]
     targetAmount: Optional[float]
     currentAmount: Optional[float]
+    createdAt: datetime
+    updatedAt: datetime
 
 # --- Endpoints ---
-
-@router.get("/ref-goals", response_model=List[RefGoalRead])
-async def get_ref_goals(
-    db: AsyncSession = Depends(get_db)
-) -> Any:
-    """
-    Fetch the list of standard 'Reference Goals' available to all users.
-    
-    Examples: 'Emergency Fund', 'Max 401(k)', 'Pay Off Debt'.
-    If the table is empty, this endpoint seeds it with default values.
-    """
-    stmt = select(RefGoal).where(RefGoal.isActive == True)
-    result = await db.execute(stmt)
-    goals = result.scalars().all()
-    
-    # Auto-seed if empty (Simple approach for development)
-    if not goals:
-        defaults = [
-            RefGoal(title="Emergency Fund", description="Save 3-6 months of expenses", category="risk", icon="ShieldCheck", defaultTargetOffset=1, type=GoalType.EMERGENCY_FUND),
-            RefGoal(title="Max 401(k)", description="Contribute the maximum annual amount to your 401(k)", category="retirement", icon="Briefcase", defaultTargetOffset=1, type=GoalType.RETIREMENT_401K),
-            RefGoal(title="Pay Off Debt", description="Eliminate high-interest consumer debt", category="financial", icon="CreditCard", defaultTargetOffset=3, type=GoalType.DEBT_PAYOFF),
-            RefGoal(title="Pay off Mortgage", description="Pay off remaining mortgage balance", category="lifestyle", icon="Home", defaultTargetOffset=5, type=GoalType.MORTGAGE_PAYOFF),
-            RefGoal(title="Health Savings", description="Fund your HSA for medical expenses", category="health", icon="HeartPulse", defaultTargetOffset=1, type=GoalType.HEALTH_SAVINGS),
-            RefGoal(title="Additional Income", description="Establish sources of additional income", category="investing", icon="TrendingUp", defaultTargetOffset=10, type=GoalType.ADDITIONAL_INCOME),
-        ]
-        for g in defaults:
-            db.add(g)
-        await db.commit()
-        
-        # Re-fetch
-        result = await db.execute(stmt)
-        goals = result.scalars().all()
-        
-    return goals
 
 @router.get("/user-goals", response_model=List[UserGoalRead])
 async def get_user_goals(
@@ -92,57 +61,31 @@ async def get_user_goals(
 ) -> Any:
     """
     Fetch all goals belonging to the current user.
-    
-    Key Logic:
-    - This endpoint returns DYNAMIC data. 
-    - It calls `GoalCalculator.calculate_current_progress` for each goal to ensure 
-      the `currentAmount` reflects the user's latest financial data (e.g. real-time savings balance).
     """
-    # Fetch user goals with RefGoal relationship eagerly if possible, or join
-    # SQLModel relationships are async, easier to join manually or assume strict fetching.
-    # We'll use a join for efficiency or just fetch. 
-    # Let's simple select.
-    stmt = select(UserGoal, RefGoal).outerjoin(RefGoal).where(UserGoal.userId == current_user.id)
+    stmt = select(UserGoal).where(UserGoal.userId == current_user.id)
     result = await db.execute(stmt)
-    rows = result.all()
+    user_goals = result.scalars().all()
     
-    output = []
-    for user_goal, ref_goal in rows:
-        # Dynamic Recalculation (Display Only)
-        if ref_goal:
-             # Use ref_goal.type if available, else fallback to parsing title for backward compatibility or simple default
-             goal_type = ref_goal.type if ref_goal.type else GoalType.CUSTOM
-             new_current = GoalCalculator.calculate_current_progress(current_user, user_goal.targetAmount or 0, goal_type)
-             user_goal.currentAmount = new_current
-             if (user_goal.targetAmount or 0) > 0:
-                  progress_val = int((new_current / user_goal.targetAmount) * 100)
-                  user_goal.progress = max(0, min(100, progress_val))
-
-        # Determine display fields (prefer user custom, fallback to ref)
-        title = user_goal.customTitle or (ref_goal.title if ref_goal else "Custom Goal")
-        desc = user_goal.customDescription or (ref_goal.description if ref_goal else "")
-        icon = user_goal.customIcon or (ref_goal.icon if ref_goal else "Target")
-        cat = ref_goal.category if ref_goal else "personal"
-        
-        output.append(UserGoalRead(
-            id=user_goal.id,
-            title=title,
-            description=desc,
-            icon=icon,
-            category=cat,
-            status=user_goal.status,
-            progress=user_goal.progress,
-            targetDate=user_goal.targetDate,
-            refGoalId=user_goal.refGoalId,
-            targetAmount=user_goal.targetAmount,
-            currentAmount=user_goal.currentAmount
-        ))
-        
-    return output
-
-from app.services.goal_calculator import GoalCalculator
-
-# ...
+    # Dynamic Recalculation logic (Optional/Advanced)
+    # Since we dropped the explicit 'type' link, we rely on stored values 
+    # OR we could try to infer type from Title if we wanted to keep auto-updating logic.
+    # For now, we return the stored values as the User intends to own them.
+    
+    return [
+        UserGoalRead(
+            id=g.id,
+            title=g.title,
+            description=g.description,
+            category=g.category,
+            icon=g.icon,
+            status=g.status,
+            progress=g.progress,
+            targetAmount=g.targetAmount,
+            currentAmount=g.currentAmount,
+            createdAt=g.createdAt,
+            updatedAt=g.updatedAt
+        ) for g in user_goals
+    ]
 
 @router.post("/user-goals", response_model=UserGoalRead)
 async def create_user_goal(
@@ -152,36 +95,40 @@ async def create_user_goal(
 ) -> Any:
     """
     Create a new goal for the user.
-    
-    If `refGoalId` is provided (Standard Goal), it uses `GoalCalculator` to:
-    - Determine a smart default `targetAmount` (e.g. 6 months expenses or IRS limit).
-    - Determine the initial `currentAmount`.
+    Supports auto-calculation if `goalTypeHint` is provided.
     """
-    # 1. Calculate Initial Values if RefGoal is present
-    initial_current = 0.0
-    initial_target = 0.0
-    initial_progress = 0
     
-    if goal_in.refGoalId:
-        ref_goal = await db.get(RefGoal, goal_in.refGoalId)
-        if ref_goal:
-            calc = GoalCalculator.calculate_initial_values(current_user, ref_goal.type)
-            initial_current = calc["currentAmount"]
-            # Prefer user-supplied target over calculated default
-            initial_target = goal_in.targetAmount if goal_in.targetAmount is not None else calc["targetAmount"]
-            if initial_target > 0:
-                initial_progress = int((initial_current / initial_target) * 100)
-                if initial_progress > 100:
-                    initial_progress = 100
-
+    # Initial Calculation Logic
+    # If the frontend passes a hint, we can use the Calculator to preset values
+    initial_current = goal_in.currentAmount or 0.0
+    initial_target = goal_in.targetAmount or 0.0
+    
+    if goal_in.goalTypeHint:
+        # Use simple string matching in calculator if we adapt it, 
+        # OR just use logic here if Calculator isn't updated yet.
+        # Let's try to trust the Calculator if it supports strings.
+        try:
+             calc = GoalCalculator.calculate_initial_values(current_user, goal_in.goalTypeHint)
+             if not initial_current and calc.get("currentAmount", 0) > 0:
+                 initial_current = calc["currentAmount"]
+             if not initial_target and calc.get("targetAmount", 0) > 0:
+                 initial_target = calc["targetAmount"]
+        except:
+            pass # Ignore calculation errors on hints
+            
+    # Calculate initial progress
+    initial_progress = 0
+    if initial_target > 0:
+        initial_progress = int((initial_current / initial_target) * 100)
+        initial_progress = min(100, max(0, initial_progress))
+    
     user_goal = UserGoal(
         userId=current_user.id,
-        refGoalId=goal_in.refGoalId,
-        customTitle=goal_in.customTitle,
-        customDescription=goal_in.customDescription,
-        customIcon=goal_in.customIcon,
+        title=goal_in.title,
+        description=goal_in.description,
+        category=goal_in.category,
+        icon=goal_in.icon,
         status=goal_in.status,
-        targetDate=goal_in.targetDate,
         progress=initial_progress,
         currentAmount=initial_current,
         targetAmount=initial_target
@@ -190,28 +137,18 @@ async def create_user_goal(
     await db.commit()
     await db.refresh(user_goal)
     
-    # Fetch ref goal if needed for response
-    ref_goal = None
-    if user_goal.refGoalId:
-        ref_goal = await db.get(RefGoal, user_goal.refGoalId)
-        
-    title = user_goal.customTitle or (ref_goal.title if ref_goal else "Custom Goal")
-    desc = user_goal.customDescription or (ref_goal.description if ref_goal else "")
-    icon = user_goal.customIcon or (ref_goal.icon if ref_goal else "Target")
-    cat = ref_goal.category if ref_goal else "personal"
-    
     return UserGoalRead(
         id=user_goal.id,
-        title=title,
-        description=desc,
-        icon=icon,
-        category=cat,
+        title=user_goal.title,
+        description=user_goal.description,
+        category=user_goal.category,
+        icon=user_goal.icon,
         status=user_goal.status,
         progress=user_goal.progress,
-        targetDate=user_goal.targetDate,
-        refGoalId=user_goal.refGoalId,
+        targetAmount=user_goal.targetAmount,
         currentAmount=user_goal.currentAmount,
-        targetAmount=user_goal.targetAmount
+        createdAt=user_goal.createdAt,
+        updatedAt=user_goal.updatedAt
     )
 
 @router.patch("/user-goals/{goal_id}", response_model=UserGoalRead)
@@ -227,40 +164,34 @@ async def update_user_goal(
     if user_goal.userId != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    if goal_in.status is not None:
-        user_goal.status = goal_in.status
-    if goal_in.progress is not None:
-        user_goal.progress = goal_in.progress
-    if goal_in.targetDate is not None:
-        user_goal.targetDate = goal_in.targetDate
+    goal_data = goal_in.dict(exclude_unset=True)
+    for key, value in goal_data.items():
+        setattr(user_goal, key, value)
         
+    # Recalculate progress if amounts changed
+    if goal_in.currentAmount is not None or goal_in.targetAmount is not None:
+         t = user_goal.targetAmount or 0
+         c = user_goal.currentAmount or 0
+         if t > 0:
+             user_goal.progress = min(100, max(0, int((c / t) * 100)))
+             
     db.add(user_goal)
     await db.commit()
     await db.refresh(user_goal)
     
-    ref_goal = None
-    if user_goal.refGoalId:
-        ref_goal = await db.get(RefGoal, user_goal.refGoalId)
-        
-    title = user_goal.customTitle or (ref_goal.title if ref_goal else "Custom Goal")
-    desc = user_goal.customDescription or (ref_goal.description if ref_goal else "")
-    icon = user_goal.customIcon or (ref_goal.icon if ref_goal else "Target")
-    cat = ref_goal.category if ref_goal else "personal"
-    
     return UserGoalRead(
         id=user_goal.id,
-        title=title,
-        description=desc,
-        icon=icon,
-        category=cat,
+        title=user_goal.title,
+        description=user_goal.description,
+        category=user_goal.category,
+        icon=user_goal.icon,
         status=user_goal.status,
         progress=user_goal.progress,
-        targetDate=user_goal.targetDate,
-        refGoalId=user_goal.refGoalId,
+        targetAmount=user_goal.targetAmount,
         currentAmount=user_goal.currentAmount,
-        targetAmount=user_goal.targetAmount
+        createdAt=user_goal.createdAt,
+        updatedAt=user_goal.updatedAt
     )
-
 
 @router.delete("/user-goals/{goal_id}")
 async def delete_user_goal(

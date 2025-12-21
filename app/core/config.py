@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     
     # Database
     DATABASE_URL: str
+    MIGRATION_DATABASE_URL: Optional[str] = None
     
     @field_validator("DATABASE_URL")
     @classmethod

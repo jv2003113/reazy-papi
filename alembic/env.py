@@ -32,7 +32,9 @@ if config.config_file_name is not None:
 target_metadata = SQLModel.metadata
 
 # Set the database URL from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Use separate MIGRATION_DATABASE_URL if configured, else default to application URL
+db_url = settings.MIGRATION_DATABASE_URL or settings.DATABASE_URL
+config.set_main_option("sqlalchemy.url", db_url)
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

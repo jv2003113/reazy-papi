@@ -56,7 +56,6 @@ Creates a new retirement plan.
 """
 
 @router.get("/{plan_id}", response_model=RetirementPlan)
-@router.get("/{plan_id}", response_model=RetirementPlan)
 async def get_retirement_plan(
     plan_id: UUID,
     current_user: User = Depends(deps.get_current_user),

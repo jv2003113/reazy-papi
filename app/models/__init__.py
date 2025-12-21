@@ -12,4 +12,5 @@ from .milestone import UserMilestone, RefMilestone
 from .investment import InvestmentAccount, AssetAllocation, SecurityHolding
 from .activity import Activity
 from .roth import RothConversionPlan, RothConversionScenario
-from .goal import RefGoal, UserGoal
+from .goal import UserGoal
+from .action_item import UserActionItem

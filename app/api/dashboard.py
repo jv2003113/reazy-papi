@@ -10,7 +10,7 @@ from app.api import deps
 from app.database import get_db
 from app.models.user import User
 from app.models.retirement import RetirementPlan, AnnualSnapshot
-from app.models.goal import UserGoal, RefGoal
+from app.models.goal import UserGoal
 from app.services.recommendation_engine import RecommendationEngine
 
 router = APIRouter()
@@ -22,7 +22,8 @@ class Recommendation(BaseModel):
     category: str
     impact: str
     status: str
-    suggestedRefGoalTitle: str | None = None
+    actionType: str # "GOAL" or "ACTION"
+    data: dict | None = None # For goals: {currentAmount, targetAmount, goalType}. For actions: {categoryId, etc}
 
 class Resource(BaseModel):
     id: str
@@ -157,20 +158,35 @@ async def get_dashboard(
 
 
     # Fetch User Active Goals Titles for filtering recommendations
+    # Simple select of user goal titles
     goals_stmt = (
-        select(RefGoal.title)
-        .join(UserGoal, UserGoal.refGoalId == RefGoal.id)
+        select(UserGoal.title)
         .where(UserGoal.userId == current_user.id)
     )
     goals_res = await db.execute(goals_stmt)
     active_goal_titles = goals_res.scalars().all()
+
+    # Fetch User Active Action Titles
+    from app.models.action_item import UserActionItem
+    actions_stmt = (
+        select(UserActionItem.title)
+        .where(UserActionItem.user_id == current_user.id)
+        # We might want to filter by status='todo' or just existence depending on "if user deletes it comes back" logic.
+        # User said: "bring it back if the user deletes the goal".
+        # This implies existence check regardless of status, OR if status is DONE it might still be considered "handled".
+        # But if they delete the action item, it's gone from DB.
+        # So we just check existence in the table.
+    )
+    actions_res = await db.execute(actions_stmt)
+    active_action_titles = actions_res.scalars().all()
 
     # Generate Recommendations
     recommendations = RecommendationEngine.generate_recommendations(
         current_user, 
         plan, 
         portfolio_allocation, 
-        active_goal_titles=active_goal_titles
+        active_goal_titles=active_goal_titles,
+        active_action_titles=active_action_titles
     )
 
     # Use target_lookup_age for the response if plan exists
