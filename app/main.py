@@ -25,10 +25,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 # Set all CORS enabled origins
-if settings.BACKEND_CORS_ORIGINS:
+if settings.CORS_ORIGIN_URLS:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.BACKEND_CORS_ORIGINS,
+        allow_origins=settings.CORS_ORIGIN_URLS,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
