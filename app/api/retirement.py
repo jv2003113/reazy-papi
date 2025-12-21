@@ -13,8 +13,7 @@ from app.services.retirement_service import RetirementService
 
 router = APIRouter()
 
-@router.get("/", response_model=List[RetirementPlan])
-@router.get("/", response_model=List[RetirementPlan])
+@router.get("", response_model=List[RetirementPlan])
 async def get_retirement_plans(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(deps.get_db),
@@ -25,7 +24,7 @@ async def get_retirement_plans(
     result = await db.execute(select(RetirementPlan).where(RetirementPlan.userId == current_user.id).order_by(RetirementPlan.createdAt.desc()))
     return result.scalars().all()
 
-@router.post("/", response_model=RetirementPlan)
+@router.post("", response_model=RetirementPlan)
 async def create_retirement_plan(
     plan_data: RetirementPlan, # Accepts full model or base? Input usually doesn't have ID.
     # But SQLModel table=True models have ID optional.
