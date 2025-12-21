@@ -40,7 +40,7 @@ class DashboardData(BaseModel):
     resources: List[Resource]
     recentActivities: List[dict]
 
-@router.get("/", response_model=DashboardData)
+@router.get("", response_model=DashboardData)
 async def get_dashboard(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(get_db)

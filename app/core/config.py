@@ -29,7 +29,9 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
-        "http://localhost:4000", # Node API port just in case
+        "http://localhost:4000",
+        "https://reazy-ui.onrender.com",
+        "https://reazy-papi.onrender.com",
     ]
 
     # Extra
