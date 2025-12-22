@@ -48,6 +48,7 @@ class RetirementPlanBase(SQLModel):
     totalLifetimeTax: Decimal = Field(default=0, max_digits=12, decimal_places=2, sa_column_kwargs={"name": "total_lifetime_tax"})
     
     isActive: bool = Field(default=True, sa_column_kwargs={"name": "is_active"})
+    isStale: bool = Field(default=False, sa_column_kwargs={"name": "is_stale"})
 
 class RetirementPlan(RetirementPlanBase, table=True):
     __tablename__ = "retirement_plans"

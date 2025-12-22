@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # Extra
     PORT: int = 8000
 
+    # AI
+    GEMINI_API_KEY: Optional[str] = None
+    AI_CACHE_ENABLED: bool = True
+
     model_config = SettingsConfigDict(
         env_file=".env", 
         case_sensitive=True,

@@ -44,6 +44,16 @@ async def create_user_action(
     action_data = action_in.model_dump()
     action = UserActionItem(**action_data, user_id=current_user.id)
     session.add(action)
+
+    # Mark plan as stale
+    from app.models.retirement import RetirementPlan
+    query = select(RetirementPlan).where(RetirementPlan.userId == current_user.id, RetirementPlan.isActive == True)
+    result = await session.execute(query)
+    plan = result.scalars().first()
+    if plan:
+        plan.isStale = True
+        session.add(plan)
+
     await session.commit()
     await session.refresh(action)
     return action
@@ -74,6 +84,16 @@ async def update_user_action(
         setattr(action, key, value)
         
     session.add(action)
+    
+    # Mark plan as stale
+    from app.models.retirement import RetirementPlan
+    query = select(RetirementPlan).where(RetirementPlan.userId == current_user.id, RetirementPlan.isActive == True)
+    result = await session.execute(query)
+    plan = result.scalars().first()
+    if plan:
+        plan.isStale = True
+        session.add(plan)
+
     await session.commit()
     await session.refresh(action)
     return action
@@ -99,5 +119,15 @@ async def delete_user_action(
         raise HTTPException(status_code=404, detail="Action item not found")
         
     await session.delete(action)
+    
+    # Mark plan as stale
+    from app.models.retirement import RetirementPlan
+    query = select(RetirementPlan).where(RetirementPlan.userId == current_user.id, RetirementPlan.isActive == True)
+    result = await session.execute(query)
+    plan = result.scalars().first()
+    if plan:
+        plan.isStale = True
+        session.add(plan)
+
     await session.commit()
     return {"message": "Action item deleted successfully"}

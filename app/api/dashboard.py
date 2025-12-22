@@ -40,6 +40,7 @@ class DashboardData(BaseModel):
     recommendations: List[Recommendation]
     resources: List[Resource]
     recentActivities: List[dict]
+    isStale: bool = False
 
 @router.get("", response_model=DashboardData)
 async def get_dashboard(
@@ -221,5 +222,6 @@ async def get_dashboard(
                 "description": "Basics of retirement planning"
             }
         ],
-        "recentActivities": []
+        "recentActivities": [],
+        "isStale": plan.isStale if plan else False
     }

@@ -1,15 +1,19 @@
 from typing import List, Any
 from uuid import UUID
 from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from pydantic import BaseModel
 
 from app.api import deps
 from app.models import User, RetirementPlan, AnnualSnapshot, UserMilestone
 from app.models.retirement import AnnualSnapshotRead
 from app.services.retirement_service import RetirementService
+from app.models.goal import UserGoal
+from app.models.action_item import UserActionItem
+from app.services.recommendation_engine import RecommendationEngine
 
 router = APIRouter()
 
@@ -26,9 +30,7 @@ async def get_retirement_plans(
 
 @router.post("", response_model=RetirementPlan)
 async def create_retirement_plan(
-    plan_data: RetirementPlan, # Accepts full model or base? Input usually doesn't have ID.
-    # But SQLModel table=True models have ID optional.
-    # Ideally should use a Create schema. For now reuse model.
+    plan_data: RetirementPlan,
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
@@ -48,23 +50,12 @@ async def create_retirement_plan(
     
     return plan_data
 
-"""
-Creates a new retirement plan.
-
-- Enforces a maximum limit of 4 plans per user.
-- Automatically triggers the generation of financial projections upon creation.
-"""
-
 @router.get("/{plan_id}", response_model=RetirementPlan)
 async def get_retirement_plan(
     plan_id: UUID,
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
-    """
-    Fetch a specific retirement plan by ID.
-    Enforces ownership check.
-    """
     result = await db.execute(select(RetirementPlan).where(RetirementPlan.id == plan_id))
     plan = result.scalars().first()
     if not plan:
@@ -76,7 +67,7 @@ async def get_retirement_plan(
 @router.patch("/{plan_id}", response_model=RetirementPlan)
 async def update_retirement_plan(
     plan_id: UUID,
-    plan_update: dict, # Using dict to allow partial updates broadly or define a specific Pydantic model
+    plan_update: dict,
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
@@ -124,8 +115,6 @@ async def delete_retirement_plan(
     await db.commit()
     return None
 
-from pydantic import BaseModel
-
 @router.get("/{plan_id}/full")
 async def get_full_retirement_plan(
     plan_id: UUID,
@@ -155,36 +144,34 @@ async def get_full_retirement_plan(
     result_m = await db.execute(stmt_m)
     milestones = result_m.scalars().all()
     
-    
-    # Return FLATTENED object to match frontend expectations
-    # Return FLATTENED object to match frontend expectations
-    # { ...plan, snapshots, milestones }
-    print(f"DEBUG: Snapshot 0 assets: {snapshots[0].assets if snapshots else 'No snapshots'}")
     response = plan.model_dump()
     response["snapshots"] = [AnnualSnapshotRead.model_validate(s) for s in snapshots]
     response["milestones"] = milestones
     return response
 
-"""
-Fetches the 'full' retirement plan including all nested data:
-- Annual Snapshots
-- Asset/Liability/Income/Expense breakdowns per year
-- Milestones
-
-This is used for the detailed Retirement Plan Timeline view.
-"""
-
 @router.post("/generate")
 async def generate_primary_plan(
-    request: dict, # Expects { formData: ... }
+    request: dict,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
-    # Logic to create/replace primary plan
-    # 1. Delete existing P plan
-    # 1. Delete ALL existing P plans to prevent duplicates
+    # 1. Capture defaults from existing P plan
     result = await db.execute(select(RetirementPlan).where(RetirementPlan.userId == current_user.id, RetirementPlan.planType == 'P'))
     existing_primary_plans = result.scalars().all()
+    
+    defaults = {
+        "desiredAnnualRetirementSpending": 80000.0,
+        "portfolioGrowthRate": 7.0,
+        "inflationRate": 3.0
+    }
+    
+    if existing_primary_plans:
+        last_plan = existing_primary_plans[0]
+        defaults["desiredAnnualRetirementSpending"] = float(last_plan.desiredAnnualRetirementSpending or 80000.0)
+        defaults["portfolioGrowthRate"] = float(last_plan.portfolioGrowthRate or 7.0)
+        defaults["inflationRate"] = float(last_plan.inflationRate or 3.0)
+
     for p in existing_primary_plans:
         await db.delete(p)
     if existing_primary_plans:
@@ -197,7 +184,7 @@ async def generate_primary_plan(
         if val == "" or val is None:
             return 0
         try:
-            return int(float(val)) # Handle "100.00" or "100"
+            return int(float(val))
         except (ValueError, TypeError):
             return 0
 
@@ -210,13 +197,19 @@ async def generate_primary_plan(
             return Decimal(str(default))
 
     # Calculate initial net worth
+    def get_val(key, default_attr):
+        val = form_data.get(key)
+        if val is not None and val != "":
+             return val
+        return getattr(current_user, default_attr)
+
     initial_assets = (
-        safe_int(form_data.get("savingsBalance")) +
-        safe_int(form_data.get("checkingBalance")) +
-        safe_int(form_data.get("investmentBalance")) +
-        safe_int(form_data.get("retirementAccount401k")) +
-        safe_int(form_data.get("retirementAccountIRA")) +
-        safe_int(form_data.get("retirementAccountRoth"))
+        safe_int(get_val("savingsBalance", "savingsBalance")) +
+        safe_int(get_val("checkingBalance", "checkingBalance")) +
+        safe_int(get_val("investmentBalance", "investmentBalance")) +
+        safe_int(get_val("retirementAccount401k", "retirementAccount401k")) +
+        safe_int(get_val("retirementAccountIRA", "retirementAccountIRA")) +
+        safe_int(get_val("retirementAccountRoth", "retirementAccountRoth"))
     )
     
     plan_data = RetirementPlan(
@@ -226,19 +219,39 @@ async def generate_primary_plan(
         startAge=int(current_user.currentAge or 30),
         retirementAge=int(current_user.targetRetirementAge or 65),
         endAge=95,
-        desiredAnnualRetirementSpending=form_data.get("expectedAnnualExpenses", 80000),
+        desiredAnnualRetirementSpending=form_data.get("expectedAnnualExpenses", defaults["desiredAnnualRetirementSpending"]),
         initialNetWorth=initial_assets,
-        portfolioGrowthRate=safe_decimal(form_data.get("portfolioGrowthRate"), 7.0),
-        inflationRate=safe_decimal(form_data.get("inflationRate"), 3.0),
-        # Ensure other fields are defaults
+        portfolioGrowthRate=safe_decimal(form_data.get("portfolioGrowthRate"), defaults["portfolioGrowthRate"]),
+        inflationRate=safe_decimal(form_data.get("inflationRate"), defaults["inflationRate"]),
+        isStale=False
     )
     
     db.add(plan_data)
-    await db.commit()
-    await db.refresh(plan_data)
     
+    # 3. Trigger Generation
     service = RetirementService(db)
     await service.generate_retirement_plan(plan_data)
+    
+    # 4. Background AI Refresh
+    try:
+        g_res = await db.execute(select(UserGoal.title).where(UserGoal.userId == current_user.id, UserGoal.status == "in_progress"))
+        active_goal_titles = g_res.scalars().all()
+        
+        a_res = await db.execute(select(UserActionItem.title).where(UserActionItem.user_id == current_user.id, UserActionItem.status == "todo"))
+        active_action_titles = a_res.scalars().all()
+        
+        background_tasks.add_task(
+            RecommendationEngine.trigger_ai_refresh,
+            current_user,
+            plan_data,
+            active_goal_titles,
+            active_action_titles
+        )
+    except Exception as e:
+        print(f"Failed to queue AI refresh: {e}")
+
+    await db.commit()
+    await db.refresh(plan_data)
     
     # Reload snapshots and milestones for full response
     stmt = select(AnnualSnapshot).where(AnnualSnapshot.planId == plan_data.id).options(
@@ -254,26 +267,11 @@ async def generate_primary_plan(
     result_m = await db.execute(stmt_m)
     milestones = result_m.scalars().all()
 
-    
-    # Return FLATTENED response here too if consistent
     response = plan_data.model_dump()
     response["snapshots"] = [AnnualSnapshotRead.model_validate(s) for s in snapshots]
     response["milestones"] = milestones
-    # message is extra, usually ignored by typed frontend or handled specially
-    # Frontend query for /generate unlikely expects full plan details in return value used for navigation?
-    # Actually frontend usually navigates to new plan ID. 
-    # But if it consumes the result immediately...
-    # For safety, let's keep message separate if possible or add to dict.
     response["message"] = "Primary plan generated"
     return response
-
-"""
-Generates the 'Primary' retirement plan from User Profile data.
-
-- Unlike ad-hoc plans, there is only ONE Primary plan per user.
-- Calling this endpoint REPLACES the existing Primary plan.
-- Calculates initial net worth from current user balances.
-"""
 
 @router.get("/{plan_id}/year/{year}", response_model=AnnualSnapshotRead)
 async def get_retirement_plan_snapshot(
@@ -282,7 +280,6 @@ async def get_retirement_plan_snapshot(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
-    # Verify Plan Access
     result = await db.execute(select(RetirementPlan).where(RetirementPlan.id == plan_id))
     plan = result.scalars().first()
     if not plan:
@@ -290,7 +287,6 @@ async def get_retirement_plan_snapshot(
     if plan.userId != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    # Fetch Snapshot
     stmt = select(AnnualSnapshot).where(AnnualSnapshot.planId == plan_id, AnnualSnapshot.year == year).options(
         selectinload(AnnualSnapshot.assets),
         selectinload(AnnualSnapshot.liabilities),
@@ -313,7 +309,6 @@ async def get_monte_carlo_simulation(
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
-    # Verify Plan Access
     result = await db.execute(select(RetirementPlan).where(RetirementPlan.id == plan_id))
     plan = result.scalars().first()
     if not plan:
@@ -321,35 +316,14 @@ async def get_monte_carlo_simulation(
     if plan.userId != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    # Prepare Simulation Parameters
-    # 1. Current Balance (Initial Net Worth or from Snapshots?)
-    #    Monte Carlo usually projects from *today*. If the plan has snapshots, we might want the CURRENT year's balance.
-    #    Or just use `initialNetWorth` if it's a new plan.
-    #    Let's use `initialNetWorth` + accumulated growth (which is complex).
-    #    Better: Fetch the FIRST snapshot (start year) balance?
-    #    But simplest is `initialNetWorth` as "Current Investable Assets".
     current_balance = float(plan.initialNetWorth or 0)
     
-    # 2. Annual Contribution
-    #    We need `monthlyContribution` from the plan (if it exists) or calculate from snapshots.
-    #    `RetirementPlan` usually has `monthlyContribution`? I didn't see it in `create_retirement_plan`.
-    #    It has `desiredAnnualRetirementSpending`.
-    #    Snapshots have `contribution`.
-    #    Let's assume a standard contribution rate based on `currentIncome` * clean savings rate?
-    #    Or maybe check `models/retirement_plan.py` for fields I missed.
-    #    Wait, `RetirementService` generates snapshots based on logic.
-    #    Let's estimate annual contribution from `currentIncome` * 0.15 (standard) if not stored.
-    #    Actually, `RetirementPlan` likely has `monthlyContribution`. I'll check the model.
-    #    If not, I'll default to 0 for now or try to infer.
-    
-    annual_contribution = 10000.0 # Default fallback
+    annual_contribution = 10000.0
     if hasattr(plan, 'monthlyContribution') and plan.monthlyContribution:
          annual_contribution = float(plan.monthlyContribution) * 12
     elif current_user.currentIncome:
-         # Default 15% savings rate
          annual_contribution = float(current_user.currentIncome) * 0.15
          
-    # 3. Years
     current_age = current_user.currentAge or 30
     retirement_age = plan.retirementAge or 65
     end_age = plan.endAge or 95
@@ -360,15 +334,10 @@ async def get_monte_carlo_simulation(
     total_years = end_age - current_age
     if total_years < 1: total_years = 1
     
-    # 4. Annual Withdrawal (Expenses)
-    #    Assumption: desiredAnnualRetirementSpending from Plan
     annual_withdrawal = float(plan.desiredAnnualRetirementSpending or 80000.0)
     
-    # 5. Risk Profile
-    #    Fetch User's risk profile
     risk_profile = current_user.riskTolerance or "moderate"
     
-    # Run Simulation
     result = MonteCarloService.run_simulation(
         current_balance=current_balance,
         annual_contribution=annual_contribution,

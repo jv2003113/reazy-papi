@@ -1,6 +1,7 @@
 from typing import List, Dict, Any
 from app.models.user import User
 from app.models.retirement import RetirementPlan, AnnualSnapshot
+# (No extra imports needed here as we import AIService locally inside the method to avoid circular deps if any)
 
 class RecommendationEngine:
     @staticmethod
@@ -183,4 +184,192 @@ class RecommendationEngine:
                  "data": {"actionCategory": "legal"}
             })
 
+        # --- AI Integration ---
+        try:
+            from app.services.ai_service import AIService
+            
+            # Prepare context
+            # Prepare detailed context
+            user_profile = {
+                "demographics": {
+                    "age": user.currentAge,
+                    "retirementAge": user.targetRetirementAge,
+                    "location": user.currentLocation or "US",
+                    "maritalStatus": user.maritalStatus,
+                    "dependents": user.dependents,
+                    "riskTolerance": user.riskTolerance
+                },
+                "income": {
+                    "user": float(user.currentIncome or 0),
+                    "spouse": float(user.spouseCurrentIncome or 0),
+                    "other1": {"source": user.otherIncomeSource1, "amount": float(user.otherIncomeAmount1 or 0)},
+                    "other2": {"source": user.otherIncomeSource2, "amount": float(user.otherIncomeAmount2 or 0)},
+                    "growthRate": float(user.expectedIncomeGrowth or 0)
+                },
+                "assets": {
+                    "savings": float(user.savingsBalance or 0),
+                    "checking": float(user.checkingBalance or 0),
+                    "investments": float(user.investmentBalance or 0),
+                    "realEstate": float(user.realEstateValue or 0),
+                    "401k": float(user.retirementAccount401k or 0),
+                    "ira": float(user.retirementAccountIRA or 0),
+                    "roth": float(user.retirementAccountRoth or 0),
+                    "hsa": float(user.hsaBalance or 0)
+                },
+                "contributions_monthly": {
+                    "savings": float(user.investmentContribution or 0) / 12, # Assuming this is general investment
+                    "401k": float(user.retirementAccount401kContribution or 0) / 12,
+                    "ira": float(user.retirementAccountIRAContribution or 0) / 12,
+                    "roth": float(user.retirementAccountRothContribution or 0) / 12
+                },
+                "liabilities": {
+                    "mortgage": {
+                        "balance": float(user.mortgageBalance or 0),
+                        "rate": float(user.mortgageRate or 0),
+                        "payment": float(user.mortgagePayment or 0),
+                        "yearsLeft": user.mortgageYearsLeft
+                    },
+                    "creditCards": float(user.creditCardDebt or 0),
+                    "studentLoans": float(user.studentLoanDebt or 0),
+                    "otherDebt": float(user.otherDebt or 0)
+                },
+                "expenses": {
+                    "monthlyTotal": float(user.totalMonthlyExpenses or 0),
+                    "breakdown": user.expenses # Assuming this is a list of dicts
+                }
+            }
+            
+            plan_summary = {
+                "retirementAge": plan.retirementAge,
+                "lifeExpectancy": plan.endAge,
+                "targetSpending": float(plan.desiredAnnualRetirementSpending or 0),
+                "currentNetWorth": float(plan.initialNetWorth or 0),
+                "portfolio": current_portfolio_allocation
+            }
+            
+            # We need to pass simple lists of strings for context
+            # Ideally we pass full objects but titles are sufficient for "don't duplicate" context
+            goals_ctx = [{"title": t} for t in active_goal_titles]
+            actions_ctx = [{"title": t} for t in active_action_titles]
+            
+            ai_recs = AIService.generate_financial_advice(
+                user_profile,
+                plan_summary,
+                goals_ctx,
+                actions_ctx,
+                recommendations, # Existing rule-based ones
+                user_id=str(user.id)
+            )
+            
+            # Filter AI Recs (Double Check)
+            for rec in ai_recs:
+                # Check uniqueness against Goals, Actions, AND existing Recommendations
+                is_duplicate = (
+                    is_title_present(rec["title"], active_goal_titles) or
+                    is_title_present(rec["title"], active_action_titles) or
+                    any(r["title"] == rec["title"] for r in recommendations)
+                )
+                
+                if not is_duplicate:
+                    recommendations.append(rec)
+                    
+        except Exception as e:
+            # Fail silently on AI, fallback to rules
+            print(f"AI Integration Error: {e}")
+
         return recommendations
+
+    @staticmethod
+    def trigger_ai_refresh(
+        user: User, 
+        plan: RetirementPlan, 
+        active_goal_titles: List[str],
+        active_action_titles: List[str],
+        current_portfolio_allocation: Dict[str, Any] = {}
+    ):
+        """
+        Background task to force refresh AI recommendations.
+        """
+        try:
+            from app.services.ai_service import AIService
+            
+            user_profile = {
+                "demographics": {
+                    "age": user.currentAge,
+                    "retirementAge": user.targetRetirementAge,
+                    "location": user.currentLocation or "US",
+                    "maritalStatus": user.maritalStatus,
+                    "dependents": user.dependents,
+                    "riskTolerance": user.riskTolerance
+                },
+                "income": {
+                    "user": float(user.currentIncome or 0),
+                    "spouse": float(user.spouseCurrentIncome or 0),
+                    "other1": {"source": user.otherIncomeSource1, "amount": float(user.otherIncomeAmount1 or 0)},
+                    "other2": {"source": user.otherIncomeSource2, "amount": float(user.otherIncomeAmount2 or 0)},
+                    "growthRate": float(user.expectedIncomeGrowth or 0)
+                },
+                "assets": {
+                    "savings": float(user.savingsBalance or 0),
+                    "checking": float(user.checkingBalance or 0),
+                    "investments": float(user.investmentBalance or 0),
+                    "realEstate": float(user.realEstateValue or 0),
+                    "401k": float(user.retirementAccount401k or 0),
+                    "ira": float(user.retirementAccountIRA or 0),
+                    "roth": float(user.retirementAccountRoth or 0),
+                    "hsa": float(user.hsaBalance or 0)
+                },
+                "contributions_monthly": {
+                    "savings": float(user.investmentContribution or 0) / 12,
+                    "401k": float(user.retirementAccount401kContribution or 0) / 12,
+                    "ira": float(user.retirementAccountIRAContribution or 0) / 12,
+                    "roth": float(user.retirementAccountRothContribution or 0) / 12
+                },
+                "liabilities": {
+                    "mortgage": {
+                        "balance": float(user.mortgageBalance or 0),
+                        "rate": float(user.mortgageRate or 0),
+                        "payment": float(user.mortgagePayment or 0),
+                        "yearsLeft": user.mortgageYearsLeft
+                    },
+                    "creditCards": float(user.creditCardDebt or 0),
+                    "studentLoans": float(user.studentLoanDebt or 0),
+                    "otherDebt": float(user.otherDebt or 0)
+                },
+                "expenses": {
+                    "monthlyTotal": float(user.totalMonthlyExpenses or 0),
+                    "breakdown": user.expenses 
+                }
+            }
+            
+            plan_summary = {
+                "retirementAge": plan.retirementAge,
+                "lifeExpectancy": plan.endAge,
+                "targetSpending": float(plan.desiredAnnualRetirementSpending or 0),
+                "currentNetWorth": float(plan.initialNetWorth or 0),
+                "portfolio": current_portfolio_allocation
+            }
+            
+            goals_ctx = [{"title": t} for t in active_goal_titles]
+            actions_ctx = [{"title": t} for t in active_action_titles]
+            
+            # For background refresh, we might pass empty existing recommendations or standard ones?
+            # AI normally filters out existing reccs. If we pass empty, it might suggest things we already have.
+            # Ideally we pass current rule-based ones. 
+            # But calculating them requires calling `generate_recommendations` recursively which is fine.
+            # Let's perform a lightweight call to self.generate_recommendations? No, that requires inputs.
+            # Let's pass empty for now. The deduplication happens at READ time in the engine anyway.
+            # The AI cache serves raw AI ideas. The engine filters them. So passing empty here is acceptable 
+            # as long as the prompt doesn't fail.
+            
+            AIService.generate_financial_advice(
+                user_profile,
+                plan_summary,
+                goals_ctx,
+                actions_ctx,
+                existing_recommendations=[], 
+                user_id=str(user.id),
+                force_refresh=True
+            )
+        except Exception as e:
+            print(f"Background AI Refresh Failed: {e}")

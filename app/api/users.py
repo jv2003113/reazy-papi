@@ -37,6 +37,23 @@ async def update_user(
     for key, value in user_data.items():
         setattr(current_user, key, value)
     
+    # Mark plan as stale
+    from app.models.retirement import RetirementPlan
+    # Target PRIMARY active plan
+    query = select(RetirementPlan).where(
+        RetirementPlan.userId == user_id, 
+        RetirementPlan.isActive == True,
+        RetirementPlan.planType == 'P'
+    )
+    result = await db.execute(query)
+    plan = result.scalars().first()
+    if plan:
+        print(f"Marketing plan {plan.id} as stale for user {user_id}")
+        plan.isStale = True
+        db.add(plan)
+    else:
+        print(f"No active primary plan found for user {user_id} to mark as stale.")
+    
     db.add(current_user)
     await db.commit()
     await db.refresh(current_user)
