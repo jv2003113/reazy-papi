@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # AI
     GEMINI_API_KEY: Optional[str] = None
     AI_CACHE_ENABLED: bool = True
+    
+    # Ollama / Local AI
+    AI_PROVIDER: str = "google" # 'google' or 'ollama'
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "deepseek-r1:latest"
 
     model_config = SettingsConfigDict(
         env_file=".env", 

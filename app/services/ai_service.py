@@ -52,67 +52,82 @@ class AIService:
             except Exception as e:
                 logger.warning(f"Failed to read cache: {e}")
 
+        # Prepare Prompt (Shared)
+        prompt = f"""
+        You are an expert financial advisor. Analyze the following user data and suggest 2-3 specific, actionable financial recommendations.
+        
+        USER PROFILE:
+        {json.dumps(user_profile, indent=2)}
+
+        RETIREMENT PLAN:
+        {json.dumps(plan_summary, indent=2)}
+
+        EXISTING GOALS:
+        {json.dumps(goals, indent=2)}
+
+        EXISTING ACTIONS:
+        {json.dumps(actions, indent=2)}
+
+        CURRENT RULE-BASED RECOMMENDATIONS:
+        {json.dumps(existing_recommendations, indent=2)}
+
+        INSTRUCTIONS:
+        1. Suggest 10 NEW recommendations that are NOT covered by existing goals, actions, or current recommendations.
+        2. Focus on high impact recommendations first.
+        3. Return a JSON array of objects. Each object must strictly follow this schema:
+           {{
+             "id": "ai_rec_<unique_suffix>",
+             "title": "Short Title",
+             "description": "One sentence description.",
+             "impact": "high" | "medium" | "info",
+             "status": "active",
+             "actionType": "ACTION" | "GOAL", 
+             "category": "saving" | "investing" | "debt" | "risk" | "estate" | "tax",
+             "data": {{ 
+                "icon": "Lightbulb" | "TrendingUp" | "Shield" | "AlertCircle" | "Info",
+                "goalCategory": "savings" | "retirement" | "debt" | "income" (only if actionType=GOAL),
+                "actionCategory": "general" | "legal" | "investment" | "budget" (only if actionType=ACTION)
+             }}
+           }}
+        4. Do not output markdown code blocks. Output RAW JSON only.
+        """
+
         try:
-            # New SDK Client Initialization
-            client = genai.Client(api_key=api_key)
+            recommendations = []
+            provider = settings.AI_PROVIDER.lower()
             
-            # Construct Prompt
-            prompt = f"""
-            You are an expert financial advisor. Analyze the following user data and suggest 2-3 specific, actionable financial recommendations.
+            if provider == "ollama":
+                logger.info(f"Using AI Provider: Ollama ({settings.OLLAMA_MODEL})")
+                recommendations = AIService._generate_ollama(prompt)
+            else:
+                # Default to Google
+                api_key = settings.GEMINI_API_KEY
+                if not api_key:
+                    logger.warning("GEMINI_API_KEY not found. Skipping AI recommendations.")
+                    return []
+                recommendations = AIService._generate_google(api_key, prompt)
             
-            USER PROFILE:
-            {json.dumps(user_profile, indent=2)}
-
-            RETIREMENT PLAN:
-            {json.dumps(plan_summary, indent=2)}
-
-            EXISTING GOALS:
-            {json.dumps(goals, indent=2)}
-
-            EXISTING ACTIONS:
-            {json.dumps(actions, indent=2)}
-
-            CURRENT RULE-BASED RECOMMENDATIONS:
-            {json.dumps(existing_recommendations, indent=2)}
-
-            INSTRUCTIONS:
-            1. Suggest 2-3 NEW recommendations that are NOT covered by existing goals, actions, or current recommendations.
-            2. Focus on "blind spots" (e.g., ).
-            3. Return a JSON array of objects. Each object must strictly follow this schema:
-               {{
-                 "id": "ai_rec_<unique_suffix>",
-                 "title": "Short Title",
-                 "description": "One sentence description.",
-                 "impact": "high" | "medium" | "info",
-                 "status": "active",
-                 "actionType": "ACTION" | "GOAL", 
-                 "category": "saving" | "investing" | "debt" | "risk" | "estate" | "tax",
-                 "data": {{ 
-                    "icon": "Lightbulb" | "TrendingUp" | "Shield" | "AlertCircle" | "Info",
-                    "goalCategory": "savings" | "retirement" | "debt" | "income" (only if actionType=GOAL),
-                    "actionCategory": "general" | "legal" | "investment" | "budget" (only if actionType=ACTION)
-                 }}
-               }}
-            4. Do not output markdown code blocks. Output RAW JSON only.
-            """
-
-            # New SDK Generation Call
-            print("Calling AI")
-            response = client.models.generate_content(
-                model='gemini-2.0-flash',
-                contents=prompt
-            )
-            
-            # Clean response (remove markdown if model adds it)
-            # Response object has .text property
-            text = response.text.replace('```json', '').replace('```', '').strip()
-            
-            recommendations = json.loads(text)
-
-            # Enforce status="active" just in case AI missed it
+            # Enforce required fields (status, category) just in case AI missed them
             for r in recommendations:
                 if "status" not in r:
                     r["status"] = "active"
+                
+                if "category" not in r:
+                    # Attempt to derive from data
+                    data = r.get("data", {})
+                    if "goalCategory" in data:
+                        gc = data["goalCategory"].lower()
+                        if "retirement" in gc: r["category"] = "investing"
+                        elif "debt" in gc: r["category"] = "debt"
+                        else: r["category"] = "saving"
+                    elif "actionCategory" in data:
+                        ac = data["actionCategory"].lower()
+                        if "investment" in ac: r["category"] = "investing"
+                        elif "legal" in ac: r["category"] = "estate"
+                        elif "budget" in ac: r["category"] = "saving"
+                        else: r["category"] = "saving"
+                    else:
+                        r["category"] = "saving" # Safe default
             
             # Save to Cache
             try:
@@ -126,3 +141,81 @@ class AIService:
         except Exception as e:
             logger.error(f"Error generating AI recommendations: {e}")
             return []
+
+    @staticmethod
+    def _generate_google(api_key: str, prompt: str) -> list[dict]:
+        try:
+            client = genai.Client(api_key=api_key)
+            response = client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=prompt
+            )
+            text = response.text.replace('```json', '').replace('```', '').strip()
+            return json.loads(text)
+        except Exception as e:
+            logger.error(f"Google AI Error: {e}")
+            raise e
+
+    @staticmethod
+    def _generate_ollama(prompt: str) -> list[dict]:
+        import urllib.request
+        import urllib.error
+        import re
+        
+        url = f"{settings.OLLAMA_BASE_URL}/api/generate"
+        payload = {
+            "model": settings.OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False,
+            "format": "json"
+        }
+        
+        try:
+            data = json.dumps(payload).encode('utf-8')
+            req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req) as response:
+                res_body = response.read().decode('utf-8')
+                res_json = json.loads(res_body)
+                
+                text = res_json.get("response", "").strip()
+                
+                # Strip <think>...</think> (DeepSeek reasoning)
+                text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+                
+                # Clean markdown code blocks
+                text = text.replace('```json', '').replace('```', '').strip()
+                
+                # Check for empty response
+                if not text:
+                    logger.warning("Ollama returned empty text after stripping.")
+                    return []
+
+                parsed = json.loads(text)
+                
+                # Check if it was a string that needs DOUBLE parsing (unlikely but possible)
+                if isinstance(parsed, str):
+                    try:
+                        parsed = json.loads(parsed)
+                    except:
+                        pass
+                
+                if isinstance(parsed, dict):
+                    # AI might have returned wrapped object like {"recommendations": [...]}
+                    if "recommendations" in parsed and isinstance(parsed["recommendations"], list):
+                        return parsed["recommendations"]
+                    # Or just a single object? The prompt asks for array.
+                    # If single object, wrap in list
+                    return [parsed]
+                
+                if isinstance(parsed, list):
+                    return parsed
+                    
+                logger.warning(f"Ollama returned unexpected type: {type(parsed)}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Ollama AI Error: {e}")
+            # If 404, hint about model
+            if "HTTP Error 404" in str(e):
+                logger.error(f"Make sure model '{settings.OLLAMA_MODEL}' is pulled: `ollama pull {settings.OLLAMA_MODEL}`")
+            raise e

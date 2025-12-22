@@ -31,3 +31,5 @@ debug.log
 # Database
 *.sqlite
 *.db
+
+app/cache/*
