@@ -140,15 +140,7 @@ async def create_user_goal(
     )
     db.add(user_goal)
     
-    # Mark plan as stale
-    from app.models.retirement import RetirementPlan
-    from sqlmodel import select
-    query = select(RetirementPlan).where(RetirementPlan.userId == current_user.id, RetirementPlan.isActive == True)
-    result = await db.execute(query)
-    plan = result.scalars().first()
-    if plan:
-        plan.isStale = True
-        db.add(plan)
+
         
     await db.commit()
     await db.refresh(user_goal)
@@ -194,15 +186,7 @@ async def update_user_goal(
              
     db.add(user_goal)
     
-    # Mark plan as stale
-    from app.models.retirement import RetirementPlan
-    from sqlmodel import select
-    query = select(RetirementPlan).where(RetirementPlan.userId == current_user.id, RetirementPlan.isActive == True)
-    result = await db.execute(query)
-    plan = result.scalars().first()
-    if plan:
-        plan.isStale = True
-        db.add(plan)
+
 
     await db.commit()
     await db.refresh(user_goal)
@@ -235,15 +219,7 @@ async def delete_user_goal(
         raise HTTPException(status_code=403, detail="Not authorized")
         
     await db.delete(user_goal)
-    # Mark plan as stale
-    from app.models.retirement import RetirementPlan
-    from sqlmodel import select
-    query = select(RetirementPlan).where(RetirementPlan.userId == current_user.id, RetirementPlan.isActive == True)
-    result = await db.execute(query)
-    plan = result.scalars().first()
-    if plan:
-        plan.isStale = True
-        db.add(plan)
+
         
     await db.commit()
     return {"ok": True}
