@@ -12,6 +12,7 @@ from app.models.user import User
 from app.models.retirement import RetirementPlan, AnnualSnapshot
 from app.models.goal import UserGoal
 from app.services.recommendation_engine import RecommendationEngine
+from app.services.retirement_service import RetirementService
 
 router = APIRouter()
 
@@ -51,19 +52,26 @@ async def get_dashboard(
     result = await db.execute(select(RetirementPlan).where(RetirementPlan.userId == current_user.id, RetirementPlan.planType == 'P'))
     plan = result.scalars().first()
     
+    
     # Defaults
     readiness_score = 0
     projected_income = 0
     savings_rate_pct = 0
     savings_rate_amt = 0
     
+    # Helpers
+    def get_asset(k): return float((current_user.assets or {}).get(k) or 0)
+    def get_inc(k): return float((current_user.income or {}).get(k) or 0)
+    def get_lia(k): return float((current_user.liabilities or {}).get(k) or 0)
+    def get_pers(k): return (current_user.personal_info or {}).get(k)
+    
     portfolio_total = (
-        (current_user.savingsBalance or 0) + 
-        (current_user.checkingBalance or 0) + 
-        (current_user.investmentBalance or 0) + 
-        (current_user.retirementAccount401k or 0) + 
-        (current_user.retirementAccountIRA or 0) + 
-        (current_user.retirementAccountRoth or 0) 
+        get_asset("savingsBalance") + 
+        get_asset("checkingBalance") + 
+        get_asset("investmentBalance") + 
+        get_asset("retirementAccount401k") + 
+        get_asset("retirementAccountIRA") + 
+        get_asset("retirementAccountRoth")
     )
     
     # Retirement Target & Progress Defaults
@@ -73,17 +81,17 @@ async def get_dashboard(
 
     if plan:
         # Savings Rate
-        monthly_income = (float(current_user.currentIncome or 0) +
-        float(current_user.spouseCurrentIncome or 0) +
-        float(current_user.otherIncomeAmount1 or 0) +
-        float(current_user.otherIncomeAmount2 or 0) 
+        monthly_income = (get_inc("currentIncome") +
+        get_inc("spouseCurrentIncome") +
+        get_inc("otherIncomeAmount1") +
+        get_inc("otherIncomeAmount2") 
         ) / 12
         if monthly_income > 0:
             savings_monthly = (
-                float(current_user.investmentContribution or 0) + 
-                float(current_user.retirementAccount401kContribution or 0) + 
-                float(current_user.retirementAccountIRAContribution or 0) + 
-                float(current_user.retirementAccountRothContribution or 0)
+                get_asset("investmentContribution") + 
+                get_asset("retirementAccount401kContribution") + 
+                get_asset("retirementAccountIRAContribution") + 
+                get_asset("retirementAccountRothContribution")
             ) / 12
             savings_rate_amt = savings_monthly
             savings_rate_pct = int((savings_monthly / monthly_income) * 100)
@@ -93,16 +101,32 @@ async def get_dashboard(
         current_amount = float(portfolio_total) # Liquid assets only (excludes real estate)
         progress_pct = 0
         
+    import app.services.retirement_service as rs_lib # local import to avoid circular? 
+    # Actually services shouldn't import API but API imports services. 
+    # But dashboard.py is API. So it is safe to import RetirementService.
+    
+    if plan:
+        # Resolve inputs
+        inputs = RetirementService._resolve_inputs(plan, current_user)
+        
         # Projected Monthly Income (at retirement - when BOTH are retired if couple)
         # Determine the year (relative to now) when the last person retires
-        years_to_primary_ret = plan.retirementAge - plan.startAge
+        years_to_primary_ret = (inputs.get("retirementAge") or 65) - plan.startAge
         years_to_spouse_ret = 0
         
-        if plan.spouseRetirementAge and plan.spouseStartAge:
-             years_to_spouse_ret = plan.spouseRetirementAge - plan.spouseStartAge
+        # Calculate Spouse Timeline using User Profile
+        spouse_age = float((current_user.personal_info or {}).get("spouseCurrentAge") or 0)
+        spouse_ret_age = float((current_user.personal_info or {}).get("spouseTargetRetirementAge") or 65)
+        
+        if spouse_age > 0:
+             # If we have a spouse, we approximate their timeline relative to the plan start
+             # Plan Start Age is based on User. 
+             # We need to know when spouse retires relative to user.
+             # Years to spouse retire = Spouse Ret Age - Spouse Current Age.
+             years_to_spouse_ret = spouse_ret_age - spouse_age
              
         years_to_full_retirement = max(years_to_primary_ret, years_to_spouse_ret)
-        target_lookup_age = plan.startAge + years_to_full_retirement
+        target_lookup_age = plan.startAge + int(years_to_full_retirement)
         
         stmt = select(AnnualSnapshot).where(AnnualSnapshot.planId == plan.id, AnnualSnapshot.age == target_lookup_age)
         snap_res = await db.execute(stmt)
@@ -117,12 +141,12 @@ async def get_dashboard(
              if retirement_target_amount > 0:
                  progress_pct = int((current_amount / retirement_target_amount) * 100)
         else:
-             projected_income = float(plan.estimatedSocialSecurityBenefit or 0) / 12
+             projected_income = float(inputs.get("estimatedSocialSecurityBenefit", 0) or 0) / 12
              
     # Prepare Portfolio Breakdown
     # Cash: Savings + Checking
-    cash_val = float(current_user.savingsBalance or 0) + float(current_user.checkingBalance or 0)
-    real_estate_val = float(current_user.realEstateValue or 0)
+    cash_val = get_asset("savingsBalance") + get_asset("checkingBalance")
+    real_estate_val = get_asset("realEstateValue")
     investments_val = float(portfolio_total) - cash_val # Removed real_estate_val subtraction as portfolio_total doesn't include it
     
     # 60/40 Split for investments as placeholder
@@ -195,17 +219,17 @@ async def get_dashboard(
     
     return {
         "retirementTarget": {
-            "targetAmount": int(retirement_target_amount),
-            "currentAmount": int(current_amount),
+            "targetValue": int(retirement_target_amount),
+            "currentValue": int(current_amount),
             "progressPercentage": progress_pct,
             "targetRetirementAge": display_target_age
         },
         "monthlyIncome": {
             "projected": int(projected_income),
-            "goal": int(float(current_user.currentIncome or 0) * 0.8 / 12),
-            "percentOfCurrent": int(projected_income / (float(current_user.currentIncome or 1)/12) * 100),
+            "goal": int(get_inc("currentIncome") * 0.8 / 12),
+            "percentOfCurrent": int(projected_income / (get_inc("currentIncome") or 1)/12 * 100),
             "description": "Projected monthly income at retirement (full)",
-            "targetYear": (datetime.now().year + (display_target_age - (current_user.currentAge or 30))) if plan else 2055
+            "targetYear": (datetime.now().year + (display_target_age - (get_pers("currentAge") or 30))) if plan else 2055
         },
         "savingsRate": {
             "percentage": savings_rate_pct,

@@ -33,13 +33,18 @@ class RecommendationEngine:
             # So stricter is better.
             return any(t.lower() == target for t in title_list)
 
+        # Helper for safer retrieval
+        def get_d(category, key, default=0):
+            d = getattr(user, category, {}) or {}
+            return float(d.get(key) or 0)
+
         # 1. Savings Rate Analysis
-        monthly_income = (float(user.currentIncome or 0) + float(user.spouseCurrentIncome or 0)) / 12
+        monthly_income = (get_d("income", "currentIncome") + get_d("income", "spouseCurrentIncome")) / 12
         monthly_savings = (
-            float(user.investmentContribution or 0) + 
-            float(user.retirementAccount401kContribution or 0) + 
-            float(user.retirementAccountIRAContribution or 0) + 
-            float(user.retirementAccountRothContribution or 0)
+            get_d("assets", "investmentContribution") + 
+            get_d("assets", "retirementAccount401kContribution") + 
+            get_d("assets", "retirementAccountIRAContribution") + 
+            get_d("assets", "retirementAccountRothContribution")
         ) / 12
         
         savings_rate = (monthly_savings / monthly_income * 100) if monthly_income > 0 else 0
@@ -89,7 +94,9 @@ class RecommendationEngine:
             
             # Logic: If current < target, recommend it
             if ef_values["currentValue"] < ef_values["targetValue"]:
-                 months_covered = ef_values["currentValue"] / (float(user.totalMonthlyExpenses or 4000))
+                 monthly_exp = get_d("expenses", "totalMonthlyExpenses")
+                 if monthly_exp == 0: monthly_exp = 4000
+                 months_covered = ef_values["currentValue"] / monthly_exp
                  recommendations.append({
                     "id": "rec_emergency_fund",
                     "title": "Build Emergency Fund",
@@ -99,7 +106,6 @@ class RecommendationEngine:
                     "status": "active",
                     "actionType": "GOAL",
                     "data": {
-                        "goalType": "EMERGENCY_FUND",
                         "goalType": "EMERGENCY_FUND",
                         "currentValue": ef_values["currentValue"],
                         "targetValue": ef_values["targetValue"],
@@ -115,7 +121,7 @@ class RecommendationEngine:
                         is_title_present("Maximize 401(k)", active_goal_titles)
         
         if not has_401k_goal:
-            annual_401k = float(user.retirementAccount401kContribution or 0)
+            annual_401k = get_d("assets", "retirementAccount401kContribution")
             target_401k = 23000.0
             if annual_401k < target_401k and annual_401k > 0:
                  recommendations.append({
@@ -127,7 +133,6 @@ class RecommendationEngine:
                     "status": "active",
                     "actionType": "GOAL",
                     "data": {
-                        "goalType": "RETIREMENT_401K",
                         "goalType": "RETIREMENT_401K",
                         "currentValue": annual_401k,
                         "targetValue": target_401k,
@@ -145,7 +150,7 @@ class RecommendationEngine:
                            is_title_present(rec_aggressive_title, active_action_titles)
 
         if not has_alloc_action:
-            current_age = user.currentAge or 30
+            current_age = (user.personal_info or {}).get("currentAge") or 30
             target_stock_pct = 110 - current_age
             current_stocks = current_portfolio_allocation.get("categories", {}).get("stocks", {}).get("percentage", 60)
             
@@ -192,60 +197,82 @@ class RecommendationEngine:
             
             # Prepare context
             # Prepare detailed context
+            # Helper for strings
+            def get_s(cat, key): return (getattr(user, cat, {}) or {}).get(key)
+
             user_profile = {
                 "demographics": {
-                    "age": user.currentAge,
-                    "retirementAge": user.targetRetirementAge,
-                    "location": user.currentLocation or "US",
-                    "maritalStatus": user.maritalStatus,
-                    "dependents": user.dependents,
-                    "riskTolerance": user.riskTolerance
+                    "age": get_d("personal_info", "currentAge"),
+                    "retirementAge": get_d("personal_info", "targetRetirementAge"),
+                    "location": get_s("personal_info", "currentLocation") or "US",
+                    "maritalStatus": get_s("personal_info", "maritalStatus"),
+                    "dependents": int(get_d("personal_info", "dependents")),
+                    "riskTolerance": get_s("risk", "riskTolerance")
                 },
                 "income": {
-                    "user": float(user.currentIncome or 0),
-                    "spouse": float(user.spouseCurrentIncome or 0),
-                    "other1": {"source": user.otherIncomeSource1, "amount": float(user.otherIncomeAmount1 or 0)},
-                    "other2": {"source": user.otherIncomeSource2, "amount": float(user.otherIncomeAmount2 or 0)},
-                    "growthRate": float(user.expectedIncomeGrowth or 0)
+                    "user": get_d("income", "currentIncome"),
+                    "spouse": get_d("income", "spouseCurrentIncome"),
+                    "other1": {"source": get_s("income", "otherIncomeSource1"), "amount": get_d("income", "otherIncomeAmount1")},
+                    "other2": {"source": get_s("income", "otherIncomeSource2"), "amount": get_d("income", "otherIncomeAmount2")},
+                    "growthRate": get_d("income", "expectedIncomeGrowth")
                 },
                 "assets": {
-                    "savings": float(user.savingsBalance or 0),
-                    "checking": float(user.checkingBalance or 0),
-                    "investments": float(user.investmentBalance or 0),
-                    "realEstate": float(user.realEstateValue or 0),
-                    "401k": float(user.retirementAccount401k or 0),
-                    "ira": float(user.retirementAccountIRA or 0),
-                    "roth": float(user.retirementAccountRoth or 0),
-                    "hsa": float(user.hsaBalance or 0)
+                    "savings": get_d("assets", "savingsBalance"),
+                    "checking": get_d("assets", "checkingBalance"),
+                    "investments": get_d("assets", "investmentBalance"),
+                    "realEstate": get_d("assets", "realEstateValue"),
+                    "401k": get_d("assets", "retirementAccount401k"),
+                    "ira": get_d("assets", "retirementAccountIRA"),
+                    "roth": get_d("assets", "retirementAccountRoth"),
+                    "hsa": get_d("assets", "hsaBalance")
                 },
                 "contributions_monthly": {
-                    "savings": float(user.investmentContribution or 0) / 12, # Assuming this is general investment
-                    "401k": float(user.retirementAccount401kContribution or 0) / 12,
-                    "ira": float(user.retirementAccountIRAContribution or 0) / 12,
-                    "roth": float(user.retirementAccountRothContribution or 0) / 12
+                    "savings": get_d("assets", "investmentContribution") / 12, # Assuming this is general investment
+                    "401k": get_d("assets", "retirementAccount401kContribution") / 12,
+                    "ira": get_d("assets", "retirementAccountIRAContribution") / 12,
+                    "roth": get_d("assets", "retirementAccountRothContribution") / 12
                 },
                 "liabilities": {
                     "mortgage": {
-                        "balance": float(user.mortgageBalance or 0),
-                        "rate": float(user.mortgageRate or 0),
-                        "payment": float(user.mortgagePayment or 0),
-                        "yearsLeft": user.mortgageYearsLeft
+                        "balance": get_d("liabilities", "mortgageBalance"),
+                        "rate": get_d("liabilities", "mortgageRate"),
+                        "payment": get_d("liabilities", "mortgagePayment"),
+                        "yearsLeft": int(get_d("liabilities", "mortgageYearsLeft"))
                     },
-                    "creditCards": float(user.creditCardDebt or 0),
-                    "studentLoans": float(user.studentLoanDebt or 0),
-                    "otherDebt": float(user.otherDebt or 0)
+                    "creditCards": get_d("liabilities", "creditCardDebt"),
+                    "studentLoans": get_d("liabilities", "studentLoanDebt"),
+                    "otherDebt": get_d("liabilities", "otherDebt")
                 },
                 "expenses": {
-                    "monthlyTotal": float(user.totalMonthlyExpenses or 0),
-                    "breakdown": user.expenses # Assuming this is a list of dicts
+                    "monthlyTotal": get_d("expenses", "totalMonthlyExpenses"),
+                    "breakdown": (user.expenses or {}).get("breakdown", []) 
                 }
             }
             
+            from app.services.retirement_service import RetirementService
+            inputs = RetirementService._resolve_inputs(plan, user)
+
+            current_net_worth = (
+                get_d("assets", "savingsBalance") + 
+                get_d("assets", "checkingBalance") + 
+                get_d("assets", "investmentBalance") + 
+                get_d("assets", "realEstateValue") + 
+                get_d("assets", "retirementAccount401k") + 
+                get_d("assets", "retirementAccountIRA") + 
+                get_d("assets", "retirementAccountRoth") + 
+                get_d("assets", "hsaBalance")
+            ) - (
+                get_d("liabilities", "mortgageBalance") + 
+                get_d("liabilities", "creditCardDebt") + 
+                get_d("liabilities", "studentLoanDebt") + 
+                get_d("liabilities", "otherDebt")
+            )
+
             plan_summary = {
-                "retirementAge": plan.retirementAge,
-                "lifeExpectancy": plan.endAge,
-                "targetSpending": float(plan.desiredAnnualRetirementSpending or 0),
-                "currentNetWorth": float(plan.initialNetWorth or 0),
+                "retirementAge": inputs["retirementAge"],
+                "lifeExpectancy": inputs["endAge"], # or user.lifeExpectancy? inputs['endAge'] comes from plan/overrides
+                "targetSpending": inputs["desiredAnnualRetirementSpending"],
+                "currentNetWorth": current_net_worth,
                 "portfolio": current_portfolio_allocation
             }
             
@@ -295,60 +322,87 @@ class RecommendationEngine:
         try:
             from app.services.ai_service import AIService
             
+             # Helper for safer retrieval (duplicate definition because it's static context)
+            def get_d(category, key, default=0):
+                d = getattr(user, category, {}) or {}
+                return float(d.get(key) or 0)
+            def get_s(cat, key): return (getattr(user, cat, {}) or {}).get(key)
+
             user_profile = {
                 "demographics": {
-                    "age": user.currentAge,
-                    "retirementAge": user.targetRetirementAge,
-                    "location": user.currentLocation or "US",
-                    "maritalStatus": user.maritalStatus,
-                    "dependents": user.dependents,
-                    "riskTolerance": user.riskTolerance
+                    "age": get_d("personal_info", "currentAge"),
+                    "retirementAge": get_d("personal_info", "targetRetirementAge"),
+                    "location": get_s("personal_info", "currentLocation") or "US",
+                    "maritalStatus": get_s("personal_info", "maritalStatus"),
+                    "dependents": int(get_d("personal_info", "dependents")),
+                    "riskTolerance": get_s("risk", "riskTolerance")
                 },
                 "income": {
-                    "user": float(user.currentIncome or 0),
-                    "spouse": float(user.spouseCurrentIncome or 0),
-                    "other1": {"source": user.otherIncomeSource1, "amount": float(user.otherIncomeAmount1 or 0)},
-                    "other2": {"source": user.otherIncomeSource2, "amount": float(user.otherIncomeAmount2 or 0)},
-                    "growthRate": float(user.expectedIncomeGrowth or 0)
+                    "user": get_d("income", "currentIncome"),
+                    "spouse": get_d("income", "spouseCurrentIncome"),
+                    "other1": {"source": get_s("income", "otherIncomeSource1"), "amount": get_d("income", "otherIncomeAmount1")},
+                    "other2": {"source": get_s("income", "otherIncomeSource2"), "amount": get_d("income", "otherIncomeAmount2")},
+                    "growthRate": get_d("income", "expectedIncomeGrowth")
                 },
                 "assets": {
-                    "savings": float(user.savingsBalance or 0),
-                    "checking": float(user.checkingBalance or 0),
-                    "investments": float(user.investmentBalance or 0),
-                    "realEstate": float(user.realEstateValue or 0),
-                    "401k": float(user.retirementAccount401k or 0),
-                    "ira": float(user.retirementAccountIRA or 0),
-                    "roth": float(user.retirementAccountRoth or 0),
-                    "hsa": float(user.hsaBalance or 0)
+                    "savings": get_d("assets", "savingsBalance"),
+                    "checking": get_d("assets", "checkingBalance"),
+                    "investments": get_d("assets", "investmentBalance"),
+                    "realEstate": get_d("assets", "realEstateValue"),
+                    "401k": get_d("assets", "retirementAccount401k"),
+                    "ira": get_d("assets", "retirementAccountIRA"),
+                    "roth": get_d("assets", "retirementAccountRoth"),
+                    "hsa": get_d("assets", "hsaBalance")
                 },
                 "contributions_monthly": {
-                    "savings": float(user.investmentContribution or 0) / 12,
-                    "401k": float(user.retirementAccount401kContribution or 0) / 12,
-                    "ira": float(user.retirementAccountIRAContribution or 0) / 12,
-                    "roth": float(user.retirementAccountRothContribution or 0) / 12
+                    "savings": get_d("assets", "investmentContribution") / 12, # Assuming this is general investment
+                    "401k": get_d("assets", "retirementAccount401kContribution") / 12,
+                    "ira": get_d("assets", "retirementAccountIRAContribution") / 12,
+                    "roth": get_d("assets", "retirementAccountRothContribution") / 12
                 },
                 "liabilities": {
                     "mortgage": {
-                        "balance": float(user.mortgageBalance or 0),
-                        "rate": float(user.mortgageRate or 0),
-                        "payment": float(user.mortgagePayment or 0),
-                        "yearsLeft": user.mortgageYearsLeft
+                        "balance": get_d("liabilities", "mortgageBalance"),
+                        "rate": get_d("liabilities", "mortgageRate"),
+                        "payment": get_d("liabilities", "mortgagePayment"),
+                        "yearsLeft": int(get_d("liabilities", "mortgageYearsLeft"))
                     },
-                    "creditCards": float(user.creditCardDebt or 0),
-                    "studentLoans": float(user.studentLoanDebt or 0),
-                    "otherDebt": float(user.otherDebt or 0)
+                    "creditCards": get_d("liabilities", "creditCardDebt"),
+                    "studentLoans": get_d("liabilities", "studentLoanDebt"),
+                    "otherDebt": get_d("liabilities", "otherDebt")
                 },
                 "expenses": {
-                    "monthlyTotal": float(user.totalMonthlyExpenses or 0),
-                    "breakdown": user.expenses 
+                    "monthlyTotal": get_d("expenses", "totalMonthlyExpenses"),
+                    "breakdown": (user.expenses or {}).get("breakdown", []) 
                 }
             }
             
+            # Resolve inputs
+            from app.services.retirement_service import RetirementService
+            inputs = RetirementService._resolve_inputs(plan, user)
+            
+            # Recalculate Net Worth
+            current_net_worth = (
+                get_d("assets", "savingsBalance") + 
+                get_d("assets", "checkingBalance") + 
+                get_d("assets", "investmentBalance") + 
+                get_d("assets", "realEstateValue") + 
+                get_d("assets", "retirementAccount401k") + 
+                get_d("assets", "retirementAccountIRA") + 
+                get_d("assets", "retirementAccountRoth") + 
+                get_d("assets", "hsaBalance")
+            ) - (
+                get_d("liabilities", "mortgageBalance") + 
+                get_d("liabilities", "creditCardDebt") + 
+                get_d("liabilities", "studentLoanDebt") + 
+                get_d("liabilities", "otherDebt")
+            )
+
             plan_summary = {
-                "retirementAge": plan.retirementAge,
-                "lifeExpectancy": plan.endAge,
-                "targetSpending": float(plan.desiredAnnualRetirementSpending or 0),
-                "currentNetWorth": float(plan.initialNetWorth or 0),
+                "retirementAge": inputs["retirementAge"],
+                "lifeExpectancy": inputs["endAge"],
+                "targetSpending": float(inputs["desiredAnnualRetirementSpending"] or 0),
+                "currentNetWorth": current_net_worth,
                 "portfolio": current_portfolio_allocation
             }
             

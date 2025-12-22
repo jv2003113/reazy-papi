@@ -1,12 +1,8 @@
 from .user import User
 from .form_progress import MultiStepFormProgress
 from .retirement import (
-    RetirementPlan, 
-    AnnualSnapshot, 
-    AnnualSnapshotAsset, 
-    AnnualSnapshotLiability, 
-    AnnualSnapshotIncome, 
-    AnnualSnapshotExpense
+    RetirementPlan,
+    AnnualSnapshot
 )
 from .milestone import UserMilestone, RefMilestone
 from .investment import InvestmentAccount, AssetAllocation, SecurityHolding

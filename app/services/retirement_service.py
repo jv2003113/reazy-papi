@@ -9,13 +9,9 @@ from sqlmodel import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    User, 
-    RetirementPlan, 
-    AnnualSnapshot, 
-    AnnualSnapshotAsset, 
-    AnnualSnapshotLiability, 
-    AnnualSnapshotIncome, 
-    AnnualSnapshotExpense,
+    User,
+    RetirementPlan,
+    AnnualSnapshot,
     UserMilestone
 )
 from app.models.retirement import RetirementPlanBase
@@ -100,103 +96,124 @@ class RetirementService:
         
         return plan
 
+    @staticmethod
+    def _resolve_inputs(plan: RetirementPlan, user: User) -> Dict[str, Any]:
+        """
+        Resolves the effective plan configuration.
+        Priority: Plan Overrides > User Profile (JSONB) > System Defaults
+        """
+        overrides = plan.planOverrides or {}
+        
+        # Helper to safely get from nested JSONB
+        def val(key, category, attr, default):
+            if key in overrides:
+                return overrides[key]
+            
+            # Access user category (dict)
+            cat_dict = getattr(user, category, {}) or {}
+            u_val = cat_dict.get(attr)
+            return u_val if u_val is not None else default
+
+        # Map inputs
+        return {
+            "inflationRate": float(val("inflationRate", "risk", "inflationRateAssumption", 3.0)) / 100,
+            "portfolioGrowthRate": float(val("portfolioGrowthRate", "risk", "investmentReturnAssumption", 7.0)) / 100,
+            "bondGrowthRate": float(val("bondGrowthRate", "risk", "bondGrowthRateAssumption", 4.0)) / 100,
+            
+            "retirementAge": int(val("retirementAge", "personal_info", "targetRetirementAge", 65)),
+            
+            "socialSecurityStartAge": int(val("socialSecurityStartAge", "income", "socialSecurityStartAge", 67)),
+            "estimatedSocialSecurityBenefit": float(val("estimatedSocialSecurityBenefit", "income", "socialSecurityAmount", 0)),
+            
+            "pensionIncome": float(val("pensionIncome", "income", "pensionIncome", 0)),
+            
+            "desiredAnnualRetirementSpending": float(val("desiredAnnualRetirementSpending", "expenses", "desiredRetirementSpending", 80000)),
+
+            # Note: startAge/endAge are still on Plan model.
+            "startAge": int(overrides.get("startAge", plan.startAge)), 
+            "endAge": int(overrides.get("endAge", plan.endAge))
+        }
+
     def calculate_financial_projections(self, plan: RetirementPlan, user: User) -> List[Dict[str, Any]]:
         """
-        Core simulation engine. Calculates financial state for every year from startAge to endAge.
-
-        Logic:
-        - Iterates through each year/age.
-        - Determines if user is in 'Working' or 'Retired' phase based on `plan.retirementAge`.
-        - Calculates Income:
-            - Working: Salary (inflated).
-            - Retired: Social Security + Pension (inflated).
-            - Other: Additional income sources.
-        - Calculates Expenses:
-            - Inflates base expenses year-over-year.
-        - Calculates Contributions (Working Phase):
-            - 401k/IRA limits applied.
-            - Spillover goes to Brokerage/Savings.
-            - HSA contributions added.
-        - Calculates Withdrawals (Retired Phase):
-            - Covers expense deficits from various accounts (401k, Brokerage, etc.).
-        - Applies Investment Growth:
-            - Compound growth on assets (Portfolio Rate for stocks, Bond Rate for cash).
-        - Tracks Net Worth, Assets, Liabilities.
-
-        Args:
-            plan (RetirementPlan): Plan assumptions (growth rates, retirement age).
-            user (User): Current financial starting point (balances, salaries).
-
-        Returns:
-            List[Dict]: A list of dictionary objects representing the financial state for each year.
+        Core simulation engine. Calculates financial state for every year.
+        Uses resolved inputs from User + Overrides.
         """
         projections = []
         current_year = datetime.now().year
         
-        inflation_rate = float(plan.inflationRate) / 100
-        portfolio_growth_rate = float(plan.portfolioGrowthRate) / 100
-        bond_growth_rate = float(plan.bondGrowthRate) / 100
+        # Resolve effective inputs
+        inputs = RetirementService._resolve_inputs(plan, user)
+        
+        inflation_rate = inputs["inflationRate"]
+        portfolio_growth_rate = inputs["portfolioGrowthRate"]
+        bond_growth_rate = inputs["bondGrowthRate"]
+        
+        retirement_age = inputs["retirementAge"]
+        start_age = inputs["startAge"]
+        end_age = inputs["endAge"]
+
+        # Helper for safer retrieval
+        def get_d(category, key, default=0):
+            d = getattr(user, category, {}) or {}
+            return float(d.get(key) or 0)
         
         # Initial Balances
-        total_401k = float(user.retirementAccount401k or 0) + float(user.retirementAccountIRA or 0)
-        total_roth_ira = float(user.retirementAccountRoth or 0)
-        total_brokerage = float(user.investmentBalance or 0)
-        total_brokerage = float(user.investmentBalance or 0)
-        total_savings = float(user.savingsBalance or 0) + float(user.checkingBalance or 0)
-        total_hsa = float(user.hsaBalance or 0) + float(user.spouseHsaBalance or 0)
+        total_401k = get_d("assets", "retirementAccount401k") + get_d("assets", "retirementAccountIRA")
+        total_roth_ira = get_d("assets", "retirementAccountRoth")
+        total_brokerage = get_d("assets", "investmentBalance")
+        total_savings = get_d("assets", "savingsBalance") + get_d("assets", "checkingBalance")
+        total_hsa = get_d("assets", "hsaBalance") + get_d("assets", "spouseHsaBalance")
         
-        mortgage_balance = float(user.mortgageBalance or 0)
-        mortgage_payment_annual = float(user.mortgagePayment or 0) * 12 # User stores monthly? Schema says mortgagePayment is decimal. Usually monthly.
-        # Logic in TS said: let mortgagePayment = Number(user.mortgagePayment) || 0; // Monthly
+        mortgage_balance = get_d("liabilities", "mortgageBalance")
         
         # Debts
-        credit_card_debt = float(user.creditCardDebt or 0)
-        student_loan_debt = float(user.studentLoanDebt or 0)
-        other_debt = float(user.otherDebt or 0)
+        credit_card_debt = get_d("liabilities", "creditCardDebt")
+        student_loan_debt = get_d("liabilities", "studentLoanDebt")
+        other_debt = get_d("liabilities", "otherDebt")
         
         cumulative_tax = 0.0
         
         # Loop
-        for age in range(plan.startAge, plan.endAge + 1):
-            year = current_year + (age - plan.startAge)
-            years_from_start = age - plan.startAge
+        for age in range(start_age, end_age + 1):
+            year = current_year + (age - start_age)
+            years_from_start = age - start_age
             
-            is_retired = age >= plan.retirementAge
+            is_retired = age >= retirement_age
             is_working_age = not is_retired
             
             # Income
             current_income = 0.0
             spouse_current_income = 0.0
             social_security_income = 0.0
-            pension_income = 0.0
+            pension_income_val = 0.0
             
             if is_working_age:
-                user_salary = float(user.currentIncome or 0)
-                spouse_salary = float(user.spouseCurrentIncome or 0)
+                user_salary = get_d("income", "currentIncome")
+                spouse_salary = get_d("income", "spouseCurrentIncome")
                 
                 current_income = user_salary * ((1 + inflation_rate) ** years_from_start)
                 spouse_current_income = spouse_salary * ((1 + inflation_rate) ** years_from_start)
                 
             else:
                 # Retirement
-                if age >= (plan.socialSecurityStartAge or 67):
-                    social_security_income = float(plan.estimatedSocialSecurityBenefit or 0) * ((1 + inflation_rate) ** years_from_start)
+                if age >= inputs["socialSecurityStartAge"]:
+                    social_security_income = inputs["estimatedSocialSecurityBenefit"] * ((1 + inflation_rate) ** years_from_start)
                 
-                pension_income = float(plan.pensionIncome or 0) * ((1 + inflation_rate) ** years_from_start)
+                pension_income_val = inputs["pensionIncome"] * ((1 + inflation_rate) ** years_from_start)
 
             # Other Income
-            other_income1 = float(user.otherIncomeAmount1 or 0) * ((1 + inflation_rate) ** years_from_start) if user.otherIncomeAmount1 else 0
-            other_income2 = float(user.otherIncomeAmount2 or 0) * ((1 + inflation_rate) ** years_from_start) if user.otherIncomeAmount2 else 0
+            u_inc = getattr(user, "income", {}) or {}
+            other_income_amt1 = float(u_inc.get("otherIncomeAmount1") or 0)
+            other_income_amt2 = float(u_inc.get("otherIncomeAmount2") or 0)
+
+            other_income1 = other_income_amt1 * ((1 + inflation_rate) ** years_from_start) if other_income_amt1 else 0
+            other_income2 = other_income_amt2 * ((1 + inflation_rate) ** years_from_start) if other_income_amt2 else 0
             
             gross_income = current_income + spouse_current_income + other_income1 + other_income2
-            # Note: SS and Pension added to gross later for tax calc? 
-            # TS logic: 
-            # if isWorkingAge: gross = current + spouse. 
-            # else: pension. SS. 
-            # Then adds otherIncome to gross. 
             
             if not is_working_age:
-                gross_income += social_security_income + pension_income
+                gross_income += social_security_income + pension_income_val
                 
             # Net Income Estimation
             if is_working_age:
@@ -208,21 +225,26 @@ class RetirementService:
             base_annual_expenses = 0.0
             detailed_expenses = []
             
-            if user.expenses:
-                # Handle expenses list
-                # In Python user.expenses is List[dict] already due to SQLModel JSON
-                for exp in user.expenses:
-                     amt = float(exp.get("amount", 0)) * 12
-                     base_annual_expenses += amt
-                     detailed_expenses.append({
-                         "category": exp.get("category", "Uncategorized"), 
-                         "amount": amt,
-                         "description": exp.get("description", "")
-                     })
+            u_exp = getattr(user, "expenses", {}) or {}
+            exp_breakdown = u_exp.get("breakdown", [])
+            total_monthly_exp_val = float(u_exp.get("totalMonthlyExpenses") or 0)
+
+            if exp_breakdown:
+                for exp in exp_breakdown:
+                    try:
+                        amt = float(exp.get("amount", 0) or 0) * 12
+                    except (ValueError, TypeError):
+                        amt = 0.0
+                    
+                    base_annual_expenses += amt
+                    detailed_expenses.append({
+                        "category": exp.get("category", "Uncategorized"), 
+                        "amount": amt,
+                        "description": exp.get("description", "")
+                    })
             
             if base_annual_expenses == 0:
-                # Fallback
-                 base_annual_expenses = float(user.totalMonthlyExpenses or 0) * 12
+                 base_annual_expenses = total_monthly_exp_val * 12
                  if base_annual_expenses == 0:
                      base_annual_expenses = 45000.0
                  detailed_expenses.append({"category": "Living Expenses", "amount": base_annual_expenses})
@@ -241,13 +263,11 @@ class RetirementService:
             contribution_401k = 0.0
             contribution_roth_ira = 0.0
             contribution_brokerage = 0.0
-            contribution_brokerage = 0.0
             contribution_savings = 0.0
             contribution_hsa = 0.0
             
             withdrawal_401k = 0.0
             withdrawal_roth_ira = 0.0
-            withdrawal_brokerage = 0.0
             withdrawal_brokerage = 0.0
             withdrawal_savings = 0.0
             withdrawal_hsa = 0.0
@@ -256,34 +276,25 @@ class RetirementService:
                 # Contributions
                 contribution_401k = min(23000, gross_income * 0.15)
                 catch_up = 7500 if age >= 50 else 6500
-                contribution_roth_ira = catch_up # Logic in TS was catch_up? Check. Yes: age >= 50 ? 7500 : 6500
+                contribution_roth_ira = catch_up
                 
                 remaining_income = net_income - total_expenses - contribution_401k - contribution_roth_ira
                 contribution_brokerage = max(0, remaining_income * 0.7)
                 contribution_savings = max(0, remaining_income * 0.3)
                 
-                # HSA Contribution (User + Spouse)
-                hsa_contrib_user = float(user.hsaContribution or 0)
-                hsa_contrib_spouse = float(user.spouseHsaContribution or 0)
+                hsa_contrib_user = get_d("assets", "hsaContribution")
+                hsa_contrib_spouse = get_d("assets", "spouseHsaContribution")
                 contribution_hsa = hsa_contrib_user + hsa_contrib_spouse
             else:
                 # Withdrawals
-                fixed_income = social_security_income + pension_income
+                fixed_income = social_security_income + pension_income_val
                 deficit = max(total_expenses - fixed_income, 0)
                 
                 if deficit > 0:
                     withdrawal_401k = deficit * 0.4
                     withdrawal_roth_ira = deficit * 0.2
                     withdrawal_brokerage = deficit * 0.4
-                    # Only withdraw from HSA for "Health Expenses" if we had them separated, 
-                    # for now assume it acts like a tax-advantaged account we tap last or specifically?
-                    # Let's keep it simple: grow it, but don't auto-tap it for general deficit yet unless needed?
-                    # Or treat it like Roth?
-                    # Let's just grow it for net worth purposes as per request "shown in breakdown".
                 
-                # Recalculate gross mainly for tax purposes if needed, but TS logic reused grossIncome variable
-                # "grossIncome = fixedIncome + withdrawal401k..." 
-                # This overrides previous grossIncome calculation which didn't include withdrawals?
                 gross_income = fixed_income + withdrawal_401k + withdrawal_roth_ira + withdrawal_brokerage
                 net_income = gross_income * 0.85
 
@@ -292,27 +303,15 @@ class RetirementService:
             total_roth_ira = (total_roth_ira + contribution_roth_ira - withdrawal_roth_ira) * (1 + portfolio_growth_rate)
             total_brokerage = (total_brokerage + contribution_brokerage - withdrawal_brokerage) * (1 + portfolio_growth_rate)
             total_savings = (total_savings + contribution_savings) * (1 + bond_growth_rate)
-            total_hsa = (total_hsa + contribution_hsa - withdrawal_hsa) * (1 + portfolio_growth_rate) # Assuming invested HSA
+            total_hsa = (total_hsa + contribution_hsa - withdrawal_hsa) * (1 + portfolio_growth_rate)
             
             # Mortgage
             current_mortgage_payment = 0.0
             if age < 60 and mortgage_balance > 0:
-                 current_mortgage_payment = 28000.0 # TS hardcoded 28000? "mortgagePayment = 28000; // Roughly $2,333/month" 
-                 # Wait, TS logic has a hardcoded value overriding user value?? 
-                 # "if (age < 60) { mortgagePayment = 28000; ... }"
-                 # I should probably respect the user's mortgage payment if available, but for PARITY I will copy logic.
-                 # Actually, TS logic: "let mortgagePayment = Number(user.mortgagePayment) || 0;" was initialized at top.
-                 # BUT inside loop: "if (age < 60) { mortgagePayment = 28000; ... }" 
-                 # This looks like dev testing code left in TS?
-                 # Parity requires I do what TS does, but this seems wrong.
-                 # I'll stick to 28000 parity for now but maybe flag it.
-                 # Actually, let's use the user's payment if > 0, else 28000 default?
-                 # No, TS code unconditionally sets it to 28000.
                  current_mortgage_payment = 28000.0
                  mortgage_balance = max(0, mortgage_balance * 1.05 - current_mortgage_payment)
             
             # Taxes
-            taxes_paid = gross_income * 0.25 if is_working_age else gross_income * 0.15
             taxes_paid = gross_income * 0.25 if is_working_age else gross_income * 0.15
             cumulative_tax += taxes_paid
             
@@ -332,14 +331,13 @@ class RetirementService:
                 "netWorth": net_worth,
                 "taxesPaid": taxes_paid,
                 "cumulativeTax": cumulative_tax,
-              # Store Asset Breakdown for this year
-            "assets": [
-                {"name": "401(k) / IRA", "type": "retirement", "balance": total_401k, "growth": total_401k * portfolio_growth_rate, "contribution": contribution_401k, "withdrawal": withdrawal_401k},
-                {"name": "Roth IRA", "type": "retirement", "balance": total_roth_ira, "growth": total_roth_ira * portfolio_growth_rate, "contribution": contribution_roth_ira, "withdrawal": withdrawal_roth_ira},
-                {"name": "Brokerage", "type": "investment", "balance": total_brokerage, "growth": total_brokerage * portfolio_growth_rate, "contribution": contribution_brokerage, "withdrawal": withdrawal_brokerage},
-                {"name": "Savings", "type": "cash", "balance": total_savings, "growth": total_savings * bond_growth_rate, "contribution": contribution_savings, "withdrawal": withdrawal_savings},
-                {"name": "HSA", "type": "hsa", "balance": total_hsa, "growth": total_hsa * portfolio_growth_rate, "contribution": contribution_hsa, "withdrawal": withdrawal_hsa},
-            ],
+                "assets": [
+                    {"name": "401(k) / IRA", "type": "retirement", "balance": total_401k, "growth": total_401k * portfolio_growth_rate, "contribution": contribution_401k, "withdrawal": withdrawal_401k},
+                    {"name": "Roth IRA", "type": "retirement", "balance": total_roth_ira, "growth": total_roth_ira * portfolio_growth_rate, "contribution": contribution_roth_ira, "withdrawal": withdrawal_roth_ira},
+                    {"name": "Brokerage", "type": "investment", "balance": total_brokerage, "growth": total_brokerage * portfolio_growth_rate, "contribution": contribution_brokerage, "withdrawal": withdrawal_brokerage},
+                    {"name": "Savings", "type": "cash", "balance": total_savings, "growth": total_savings * bond_growth_rate, "contribution": contribution_savings, "withdrawal": withdrawal_savings},
+                    {"name": "HSA", "type": "hsa", "balance": total_hsa, "growth": total_hsa * portfolio_growth_rate, "contribution": contribution_hsa, "withdrawal": withdrawal_hsa},
+                ],
                 "liabilities": [],
                 "income": [],
                 "expenses": projected_expenses_list + [{"category": "Taxes", "amount": taxes_paid}]
@@ -352,7 +350,7 @@ class RetirementService:
             if current_income > 0: proj["income"].append({"source": "Salary", "amount": current_income})
             if spouse_current_income > 0: proj["income"].append({"source": "Spouse Salary", "amount": spouse_current_income})
             if social_security_income > 0: proj["income"].append({"source": "Social Security", "amount": social_security_income})
-            if pension_income > 0: proj["income"].append({"source": "Pension", "amount": pension_income})
+            if pension_income_val > 0: proj["income"].append({"source": "Pension", "amount": pension_income_val})
             
             projections.append(proj)
             
@@ -362,13 +360,8 @@ class RetirementService:
         """
         Persists the calculated projections to the database.
 
-        Creates `AnnualSnapshot` records for each year, and associated child records:
-        - `AnnualSnapshotAsset`
-        - `AnnualSnapshotLiability`
-        - `AnnualSnapshotIncome`
-        - `AnnualSnapshotExpense`
-
-        This allows the frontend to query detailed breakdowns for any specific year.
+        Creates `AnnualSnapshot` records for each year.
+        Uses JSONB columns for assets, liabilities, income, and expenses details.
         """
         for p in projections:
             snapshot = AnnualSnapshot(
@@ -382,60 +375,31 @@ class RetirementService:
                 totalLiabilities=Decimal(p["totalLiabilities"]),
                 netWorth=Decimal(p["netWorth"]),
                 taxesPaid=Decimal(p["taxesPaid"]),
-                cumulativeTax=Decimal(p["cumulativeTax"])
+                cumulativeTax=Decimal(p["cumulativeTax"]),
+                # JSONB Columns
+                assets=p["assets"],
+                liabilities=p["liabilities"],
+                income=p["income"],
+                expenses=p["expenses"]
             )
             self.session.add(snapshot)
-            await self.session.flush() # flush to get ID
-            
-            # Assets
-            for a in p["assets"]:
-                asset = AnnualSnapshotAsset(
-                    snapshotId=snapshot.id,
-                    name=a["name"],
-                    type=a["type"],
-                    balance=Decimal(a["balance"]),
-                    growth=Decimal(a["growth"]),
-                    contribution=Decimal(a["contribution"]),
-                    withdrawal=Decimal(a["withdrawal"])
-                )
-                self.session.add(asset)
-            
-            # Liabilities
-            for l in p["liabilities"]:
-                lib = AnnualSnapshotLiability(
-                    snapshotId=snapshot.id,
-                    name=l["name"],
-                    type=l["type"],
-                    balance=Decimal(l["balance"]),
-                    payment=Decimal(l["payment"])
-                )
-                self.session.add(lib)
-                
-            # Income
-            for i in p["income"]:
-                inc = AnnualSnapshotIncome(
-                    snapshotId=snapshot.id,
-                    source=i["source"],
-                    amount=Decimal(i["amount"])
-                )
-                self.session.add(inc)
-
-            # Expenses
-            for e in p["expenses"]:
-                exp = AnnualSnapshotExpense(
-                    snapshotId=snapshot.id,
-                    category=e["category"],
-                    amount=Decimal(e["amount"])
-                )
-                self.session.add(exp)
+            # No need to create child records anymore
+        
+        await self.session.commit()
 
     async def create_standard_milestones(self, plan: RetirementPlan):
+        # Resolve inputs to get retirement age
+        user = await self.get_user_by_id(plan.userId)
+        if not user: return
+        inputs = self._resolve_inputs(plan, user)
+        retirement_age = inputs["retirementAge"]
+        
         current_year = datetime.now().year
         milestones = [
             {
                 "title": "Retirement Begins",
-                "targetYear": current_year + (plan.retirementAge - plan.startAge),
-                "targetAge": plan.retirementAge,
+                "targetYear": current_year + (retirement_age - plan.startAge),
+                "targetAge": retirement_age,
                 "category": "retirement",
                 "description": "Start of retirement phase"
             },

@@ -8,6 +8,11 @@ class GoalCalculator:
     to specific Goal types (e.g. "EMERGENCY_FUND", "DEBT_PAYOFF").
     """
     @staticmethod
+    def _get_val(user: User, category: str, key: str) -> float:
+        d = getattr(user, category, {}) or {}
+        return float(d.get(key) or 0)
+
+    @staticmethod
     def calculate_initial_values(user: User, goal_type: str) -> dict:
         """
         Calculates the initial 'currentAmount' and default 'targetAmount' for a new goal.
@@ -28,9 +33,10 @@ class GoalCalculator:
             
         # 1. Emergency Fund
         if goal_type == "EMERGENCY_FUND":
-            monthly_expenses = float(user.totalMonthlyExpenses or 4000)
+            monthly_expenses = GoalCalculator._get_val(user, "expenses", "totalMonthlyExpenses")
+            if monthly_expenses == 0: monthly_expenses = 4000.0
             target = monthly_expenses * 6 # Aim for 6 months
-            current = float(user.savingsBalance or 0) + float(user.checkingBalance or 0)
+            current = GoalCalculator._get_val(user, "assets", "savingsBalance") + GoalCalculator._get_val(user, "assets", "checkingBalance")
             
             result["targetValue"] = target
             result["currentValue"] = current
@@ -38,14 +44,14 @@ class GoalCalculator:
         # 2. Max 401(k)
         elif goal_type == "RETIREMENT_401K":
             result["targetValue"] = 23000.0 # 2024 Limit
-            result["currentValue"] = float(user.retirementAccount401kContribution or 0)
+            result["currentValue"] = GoalCalculator._get_val(user, "assets", "retirementAccount401kContribution")
             
             # 3. Pay Off Debt
         elif goal_type == "DEBT_PAYOFF":
             # High Interest Debt Only (Exclude Mortgage)
-            credit_cards = float(user.creditCardDebt or 0)
-            student_loans = float(user.studentLoanDebt or 0)
-            other_debt = float(user.otherDebt or 0)
+            credit_cards = GoalCalculator._get_val(user, "liabilities", "creditCardDebt")
+            student_loans = GoalCalculator._get_val(user, "liabilities", "studentLoanDebt")
+            other_debt = GoalCalculator._get_val(user, "liabilities", "otherDebt")
             
             # Track ONLY High Interest Debt
             total_debt = credit_cards + student_loans + other_debt
@@ -55,19 +61,19 @@ class GoalCalculator:
             
         # 4. Pay off Mortgage
         elif goal_type == "MORTGAGE_PAYOFF":
-             mortgage_balance = float(user.mortgageBalance or 0)
+             mortgage_balance = GoalCalculator._get_val(user, "liabilities", "mortgageBalance")
              result["targetValue"] = mortgage_balance if mortgage_balance > 0 else 250000.0
              result["currentValue"] = 0.0
              
         # 5. Additional Income
         elif goal_type == "ADDITIONAL_INCOME":
              result["targetValue"] = 2000.0 
-             result["currentValue"] = float(user.otherIncomeAmount1 or 0) + float(user.otherIncomeAmount2 or 0)
+             result["currentValue"] = GoalCalculator._get_val(user, "income", "otherIncomeAmount1") + GoalCalculator._get_val(user, "income", "otherIncomeAmount2")
 
         # 6. HSA Goal
         elif goal_type == "HEALTH_SAVINGS":
              result["targetValue"] = 10000.0
-             result["currentValue"] = float(user.hsaBalance or 0) + float(user.spouseHsaBalance or 0)
+             result["currentValue"] = GoalCalculator._get_val(user, "assets", "hsaBalance") + GoalCalculator._get_val(user, "assets", "spouseHsaBalance")
              
         return result
 
@@ -89,15 +95,15 @@ class GoalCalculator:
             return 0.0
 
         if goal_type == "EMERGENCY_FUND":
-            return float(user.savingsBalance or 0) + float(user.checkingBalance or 0)
+            return GoalCalculator._get_val(user, "assets", "savingsBalance") + GoalCalculator._get_val(user, "assets", "checkingBalance")
         
         elif goal_type == "RETIREMENT_401K":
-            return float(user.retirementAccount401kContribution or 0)
+            return GoalCalculator._get_val(user, "assets", "retirementAccount401kContribution")
             
         elif goal_type == "DEBT_PAYOFF":
-            credit_cards = float(user.creditCardDebt or 0)
-            student_loans = float(user.studentLoanDebt or 0)
-            other_debt = float(user.otherDebt or 0)
+            credit_cards = GoalCalculator._get_val(user, "liabilities", "creditCardDebt")
+            student_loans = GoalCalculator._get_val(user, "liabilities", "studentLoanDebt")
+            other_debt = GoalCalculator._get_val(user, "liabilities", "otherDebt")
             
             current_total_debt = credit_cards + student_loans + other_debt
             
@@ -105,14 +111,14 @@ class GoalCalculator:
             return max(0.0, paid_off) # Ensure not negative if debt increases
 
         elif goal_type == "MORTGAGE_PAYOFF":
-            current_mortgage = float(user.mortgageBalance or 0)
+            current_mortgage = GoalCalculator._get_val(user, "liabilities", "mortgageBalance")
             paid_off = user_goal_target - current_mortgage
             return max(0.0, paid_off)
             
         elif goal_type == "ADDITIONAL_INCOME":
-             return float(user.otherIncomeAmount1 or 0) + float(user.otherIncomeAmount2 or 0)
+             return GoalCalculator._get_val(user, "income", "otherIncomeAmount1") + GoalCalculator._get_val(user, "income", "otherIncomeAmount2")
 
         elif goal_type == "HEALTH_SAVINGS":
-             return float(user.hsaBalance or 0) + float(user.spouseHsaBalance or 0)
+             return GoalCalculator._get_val(user, "assets", "hsaBalance") + GoalCalculator._get_val(user, "assets", "spouseHsaBalance")
 
         return 0.0
