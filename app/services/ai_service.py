@@ -72,9 +72,11 @@ class AIService:
         {json.dumps(existing_recommendations, indent=2)}
 
         INSTRUCTIONS:
-        1. Suggest 10 NEW recommendations that are NOT covered by existing goals, actions, or current recommendations.
+        1. Suggest 5 NEW recommendations that are NOT covered by existing goals, actions, or current recommendations.
         2. Focus on high impact recommendations first.
-        3. Return a JSON array of objects. Each object must strictly follow this schema:
+        3. Do not give vague recommendations, like optimize something, it should be a very sepcific recommendation
+        4. If the recommendation is for certain thresholds, like expense is greater than certain percent of income, set that up as a goal and provide both percent numbers as current and target.
+        5. Return a JSON array of objects. Each object must strictly follow this schema:
            {{
              "id": "ai_rec_<unique_suffix>",
              "title": "Short Title",
@@ -86,26 +88,38 @@ class AIService:
              "data": {{ 
                 "icon": "Lightbulb" | "TrendingUp" | "Shield" | "AlertCircle" | "Info",
                 "goalCategory": "savings" | "retirement" | "debt" | "income" (only if actionType=GOAL),
-                "actionCategory": "general" | "legal" | "investment" | "budget" (only if actionType=ACTION)
+                "actionCategory": "general" | "legal" | "investment" | "budget" (only if actionType=ACTION),
+                "currentValue": <number> (optional, for tracking progress),
+                "targetValue": <number> (optional, for tracking progress)
+                "valueType": "money" | "percent" | "number" (REQUIRED. Default "money". Use "number" for age/years/counts, "percent" for rates, "money" for currency) 
              }}
            }}
-        4. Do not output markdown code blocks. Output RAW JSON only.
+        6. Do not output markdown code blocks. Output RAW JSON only.
         """
 
         try:
             recommendations = []
+            
+            # Check if AI is explicitly disabled or unconfigured
+            if not settings.AI_PROVIDER:
+                 logger.info("AI_PROVIDER not set. Skipping AI recommendations.")
+                 return []
+                 
             provider = settings.AI_PROVIDER.lower()
             
             if provider == "ollama":
                 logger.info(f"Using AI Provider: Ollama ({settings.OLLAMA_MODEL})")
                 recommendations = AIService._generate_ollama(prompt)
-            else:
+            elif provider == "google":
                 # Default to Google
                 api_key = settings.GEMINI_API_KEY
                 if not api_key:
-                    logger.warning("GEMINI_API_KEY not found. Skipping AI recommendations.")
+                    logger.info("GEMINI_API_KEY not found. Skipping Google AI recommendations.")
                     return []
                 recommendations = AIService._generate_google(api_key, prompt)
+            else:
+                logger.warning(f"Unknown AI_PROVIDER '{provider}'. Skipping AI.")
+                return []
             
             # Enforce required fields (status, category) just in case AI missed them
             for r in recommendations:

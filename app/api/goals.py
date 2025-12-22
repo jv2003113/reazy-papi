@@ -23,8 +23,9 @@ class UserGoalCreate(BaseModel):
     icon: str = "Target"
     
     status: str = "in_progress"
-    targetAmount: Optional[float] = None  
-    currentAmount: Optional[float] = None # Allow manual setting
+    targetValue: Optional[float] = None  
+    currentValue: Optional[float] = None # Allow manual setting
+    valueType: str = "money"
     
     # Metadata for auto-calculation (optional)
     goalTypeHint: Optional[str] = None # e.g. "EMERGENCY_FUND"
@@ -36,8 +37,9 @@ class UserGoalUpdate(BaseModel):
     icon: Optional[str] = None
     status: Optional[str] = None
     progress: Optional[int] = None
-    targetAmount: Optional[float] = None
-    currentAmount: Optional[float] = None
+    targetValue: Optional[float] = None
+    currentValue: Optional[float] = None
+    valueType: Optional[str] = None
 
 class UserGoalRead(BaseModel):
     id: UUID
@@ -47,8 +49,9 @@ class UserGoalRead(BaseModel):
     icon: str
     status: str
     progress: int
-    targetAmount: Optional[float]
-    currentAmount: Optional[float]
+    targetValue: Optional[float]
+    currentValue: Optional[float]
+    valueType: str
     createdAt: datetime
     updatedAt: datetime
 
@@ -80,8 +83,9 @@ async def get_user_goals(
             icon=g.icon,
             status=g.status,
             progress=g.progress,
-            targetAmount=g.targetAmount,
-            currentAmount=g.currentAmount,
+            targetValue=g.targetValue,
+            currentValue=g.currentValue,
+            valueType=g.valueType,
             createdAt=g.createdAt,
             updatedAt=g.updatedAt
         ) for g in user_goals
@@ -100,8 +104,8 @@ async def create_user_goal(
     
     # Initial Calculation Logic
     # If the frontend passes a hint, we can use the Calculator to preset values
-    initial_current = goal_in.currentAmount or 0.0
-    initial_target = goal_in.targetAmount or 0.0
+    initial_current = goal_in.currentValue or 0.0
+    initial_target = goal_in.targetValue or 0.0
     
     if goal_in.goalTypeHint:
         # Use simple string matching in calculator if we adapt it, 
@@ -109,10 +113,10 @@ async def create_user_goal(
         # Let's try to trust the Calculator if it supports strings.
         try:
              calc = GoalCalculator.calculate_initial_values(current_user, goal_in.goalTypeHint)
-             if not initial_current and calc.get("currentAmount", 0) > 0:
-                 initial_current = calc["currentAmount"]
-             if not initial_target and calc.get("targetAmount", 0) > 0:
-                 initial_target = calc["targetAmount"]
+             if not initial_current and calc.get("currentValue", 0) > 0:
+                 initial_current = calc["currentValue"]
+             if not initial_target and calc.get("targetValue", 0) > 0:
+                 initial_target = calc["targetValue"]
         except:
             pass # Ignore calculation errors on hints
             
@@ -130,8 +134,9 @@ async def create_user_goal(
         icon=goal_in.icon,
         status=goal_in.status,
         progress=initial_progress,
-        currentAmount=initial_current,
-        targetAmount=initial_target
+        currentValue=initial_current,
+        targetValue=initial_target,
+        valueType=goal_in.valueType
     )
     db.add(user_goal)
     
@@ -156,8 +161,9 @@ async def create_user_goal(
         icon=user_goal.icon,
         status=user_goal.status,
         progress=user_goal.progress,
-        targetAmount=user_goal.targetAmount,
-        currentAmount=user_goal.currentAmount,
+        targetValue=user_goal.targetValue,
+        currentValue=user_goal.currentValue,
+        valueType=user_goal.valueType,
         createdAt=user_goal.createdAt,
         updatedAt=user_goal.updatedAt
     )
@@ -179,10 +185,10 @@ async def update_user_goal(
     for key, value in goal_data.items():
         setattr(user_goal, key, value)
         
-    # Recalculate progress if amounts changed
-    if goal_in.currentAmount is not None or goal_in.targetAmount is not None:
-         t = user_goal.targetAmount or 0
-         c = user_goal.currentAmount or 0
+    # Recalculate progress if values changed
+    if goal_in.currentValue is not None or goal_in.targetValue is not None:
+         t = user_goal.targetValue or 0
+         c = user_goal.currentValue or 0
          if t > 0:
              user_goal.progress = min(100, max(0, int((c / t) * 100)))
              
@@ -209,8 +215,9 @@ async def update_user_goal(
         icon=user_goal.icon,
         status=user_goal.status,
         progress=user_goal.progress,
-        targetAmount=user_goal.targetAmount,
-        currentAmount=user_goal.currentAmount,
+        targetValue=user_goal.targetValue,
+        currentValue=user_goal.currentValue,
+        valueType=user_goal.valueType,
         createdAt=user_goal.createdAt,
         updatedAt=user_goal.updatedAt
     )

@@ -20,8 +20,9 @@ class UserGoal(SQLModel, table=True):
     # Progress & Status
     status: str = Field(default="in_progress") # "in_progress", "completed", "abandoned"
     progress: int = Field(default=0) # 0-100
-    targetAmount: Optional[float] = Field(default=0, sa_column_kwargs={"name": "target_amount"})
-    currentAmount: Optional[float] = Field(default=0, sa_column_kwargs={"name": "current_amount"})
+    targetValue: Optional[float] = Field(default=0, sa_column_kwargs={"name": "target_value"})
+    currentValue: Optional[float] = Field(default=0, sa_column_kwargs={"name": "current_value"})
+    valueType: str = Field(default="money", sa_column_kwargs={"name": "value_type"}) # money, percent, number
     
     # Timestamps
     createdAt: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"name": "created_at"})

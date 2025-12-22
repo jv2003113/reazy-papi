@@ -88,8 +88,8 @@ class RecommendationEngine:
             ef_values = GoalCalculator.calculate_initial_values(user, "EMERGENCY_FUND")
             
             # Logic: If current < target, recommend it
-            if ef_values["currentAmount"] < ef_values["targetAmount"]:
-                 months_covered = ef_values["currentAmount"] / (float(user.totalMonthlyExpenses or 4000))
+            if ef_values["currentValue"] < ef_values["targetValue"]:
+                 months_covered = ef_values["currentValue"] / (float(user.totalMonthlyExpenses or 4000))
                  recommendations.append({
                     "id": "rec_emergency_fund",
                     "title": "Build Emergency Fund",
@@ -100,8 +100,9 @@ class RecommendationEngine:
                     "actionType": "GOAL",
                     "data": {
                         "goalType": "EMERGENCY_FUND",
-                        "currentAmount": ef_values["currentAmount"],
-                        "targetAmount": ef_values["targetAmount"],
+                        "goalType": "EMERGENCY_FUND",
+                        "currentValue": ef_values["currentValue"],
+                        "targetValue": ef_values["targetValue"],
                         "icon": "Shield",
                         "goalCategory": "savings"
                     }
@@ -127,8 +128,9 @@ class RecommendationEngine:
                     "actionType": "GOAL",
                     "data": {
                         "goalType": "RETIREMENT_401K",
-                        "currentAmount": annual_401k,
-                        "targetAmount": target_401k,
+                        "goalType": "RETIREMENT_401K",
+                        "currentValue": annual_401k,
+                        "targetValue": target_401k,
                         "icon": "TrendingUp",
                         "goalCategory": "retirement"
                     }

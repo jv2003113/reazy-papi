@@ -21,7 +21,7 @@ class GoalCalculator:
         Returns:
             dict: {"currentAmount": float, "targetAmount": float}
         """
-        result = {"currentAmount": 0.0, "targetAmount": 100.0}
+        result = {"currentValue": 0.0, "targetValue": 100.0}
         
         if not goal_type:
             return result
@@ -32,13 +32,13 @@ class GoalCalculator:
             target = monthly_expenses * 6 # Aim for 6 months
             current = float(user.savingsBalance or 0) + float(user.checkingBalance or 0)
             
-            result["targetAmount"] = target
-            result["currentAmount"] = current
+            result["targetValue"] = target
+            result["currentValue"] = current
             
         # 2. Max 401(k)
         elif goal_type == "RETIREMENT_401K":
-            result["targetAmount"] = 23000.0 # 2024 Limit
-            result["currentAmount"] = float(user.retirementAccount401kContribution or 0)
+            result["targetValue"] = 23000.0 # 2024 Limit
+            result["currentValue"] = float(user.retirementAccount401kContribution or 0)
             
             # 3. Pay Off Debt
         elif goal_type == "DEBT_PAYOFF":
@@ -50,24 +50,24 @@ class GoalCalculator:
             # Track ONLY High Interest Debt
             total_debt = credit_cards + student_loans + other_debt
             
-            result["targetAmount"] = total_debt if total_debt > 0 else 1000.0
-            result["currentAmount"] = 0.0
+            result["targetValue"] = total_debt if total_debt > 0 else 1000.0
+            result["currentValue"] = 0.0
             
         # 4. Pay off Mortgage
         elif goal_type == "MORTGAGE_PAYOFF":
              mortgage_balance = float(user.mortgageBalance or 0)
-             result["targetAmount"] = mortgage_balance if mortgage_balance > 0 else 250000.0
-             result["currentAmount"] = 0.0
+             result["targetValue"] = mortgage_balance if mortgage_balance > 0 else 250000.0
+             result["currentValue"] = 0.0
              
         # 5. Additional Income
         elif goal_type == "ADDITIONAL_INCOME":
-             result["targetAmount"] = 2000.0 
-             result["currentAmount"] = float(user.otherIncomeAmount1 or 0) + float(user.otherIncomeAmount2 or 0)
+             result["targetValue"] = 2000.0 
+             result["currentValue"] = float(user.otherIncomeAmount1 or 0) + float(user.otherIncomeAmount2 or 0)
 
         # 6. HSA Goal
         elif goal_type == "HEALTH_SAVINGS":
-             result["targetAmount"] = 10000.0
-             result["currentAmount"] = float(user.hsaBalance or 0) + float(user.spouseHsaBalance or 0)
+             result["targetValue"] = 10000.0
+             result["currentValue"] = float(user.hsaBalance or 0) + float(user.spouseHsaBalance or 0)
              
         return result
 
