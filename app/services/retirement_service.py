@@ -131,7 +131,16 @@ class RetirementService:
 
             # Note: startAge/endAge are still on Plan model.
             "startAge": int(overrides.get("startAge", plan.startAge)), 
-            "endAge": int(overrides.get("endAge", plan.endAge))
+            "endAge": int(overrides.get("endAge", plan.endAge)),
+
+            # Spouse Fields
+            "spouseStartAge": int(val("spouseStartAge", "personal_info", "spouseCurrentAge", 30)) if val("spouseStartAge", "personal_info", "spouseCurrentAge", None) else None,
+            "spouseRetirementAge": int(val("spouseRetirementAge", "personal_info", "spouseTargetRetirementAge", 65)) if val("spouseRetirementAge", "personal_info", "spouseTargetRetirementAge", None) else None,
+            "spouseEndAge": int(overrides.get("spouseEndAge", 95)),
+            
+            "spouseSocialSecurityStartAge": int(overrides.get("spouseSocialSecurityStartAge", 67)),
+            "spouseEstimatedSocialSecurityBenefit": float(overrides.get("spouseEstimatedSocialSecurityBenefit", 0)),
+            "spousePensionIncome": float(overrides.get("spousePensionIncome", 0))
         }
 
     def calculate_financial_projections(self, plan: RetirementPlan, user: User) -> List[Dict[str, Any]]:
