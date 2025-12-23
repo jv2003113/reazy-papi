@@ -136,7 +136,7 @@ async def update_retirement_plan(
         # Update Overrides for Variant Plan
         overrides = dict(plan.planOverrides) if plan.planOverrides else {}
         for key, value in plan_update.items():
-            if key in field_map or key in ["startAge", "endAge"]:
+            if key in user_field_map or key in ["startAge", "endAge"]:
                 # Store input fields in overrides
                 overrides[key] = value
             elif hasattr(plan, key):
@@ -204,9 +204,20 @@ async def get_full_retirement_plan(
     # This is tricky because model_dump() is from SQLModel.
     # I'll let the UI read 'planOverrides' if present, but for Primary it might be empty.
     # Better: Patch the response with resolved values.
+    # Patch response with resolved values for UI
     service = RetirementService(db)
     resolved = service._resolve_inputs(plan, current_user)
-    response.update(resolved)
+    
+    # UI expects rates as percentages (e.g. "3.0" not 0.03) and values as strings
+    ui_resolved = dict(resolved)
+    if "inflationRate" in ui_resolved:
+        ui_resolved["inflationRate"] = str(round(float(ui_resolved["inflationRate"]) * 100, 2))
+    if "portfolioGrowthRate" in ui_resolved:
+        ui_resolved["portfolioGrowthRate"] = str(round(float(ui_resolved["portfolioGrowthRate"]) * 100, 2))
+    if "bondGrowthRate" in ui_resolved:
+        ui_resolved["bondGrowthRate"] = str(round(float(ui_resolved["bondGrowthRate"]) * 100, 2))
+        
+    response.update(ui_resolved)
     
     response["snapshots"] = [AnnualSnapshotRead.model_validate(s.model_dump()) for s in snapshots]
     response["milestones"] = milestones
@@ -313,8 +324,19 @@ async def generate_primary_plan(
 
     response = plan_data.model_dump()
     # Patch response with resolved values for UI
+    # Patch response with resolved values for UI
     resolved = service._resolve_inputs(plan_data, current_user)
-    response.update(resolved)
+    
+    # UI expects rates as percentages (e.g. "3.0" not 0.03) and values as strings
+    ui_resolved = dict(resolved)
+    if "inflationRate" in ui_resolved:
+        ui_resolved["inflationRate"] = str(round(float(ui_resolved["inflationRate"]) * 100, 2))
+    if "portfolioGrowthRate" in ui_resolved:
+        ui_resolved["portfolioGrowthRate"] = str(round(float(ui_resolved["portfolioGrowthRate"]) * 100, 2))
+    if "bondGrowthRate" in ui_resolved:
+        ui_resolved["bondGrowthRate"] = str(round(float(ui_resolved["bondGrowthRate"]) * 100, 2))
+
+    response.update(ui_resolved)
     
     response["snapshots"] = [AnnualSnapshotRead.model_validate(s.model_dump()) for s in snapshots]
     response["milestones"] = milestones
