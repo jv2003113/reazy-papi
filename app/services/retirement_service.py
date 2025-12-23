@@ -138,8 +138,8 @@ class RetirementService:
             "spouseRetirementAge": int(val("spouseRetirementAge", "personal_info", "spouseTargetRetirementAge", 65)) if val("spouseRetirementAge", "personal_info", "spouseTargetRetirementAge", None) else None,
             "spouseEndAge": int(overrides.get("spouseEndAge", 95)),
             
-            "spouseSocialSecurityStartAge": int(overrides.get("spouseSocialSecurityStartAge", 67)),
-            "spouseEstimatedSocialSecurityBenefit": float(overrides.get("spouseEstimatedSocialSecurityBenefit", 0)),
+            "spouseSocialSecurityStartAge": int(val("spouseSocialSecurityStartAge", "income", "spouseSocialSecurityStartAge", 67)),
+            "spouseEstimatedSocialSecurityBenefit": float(val("spouseEstimatedSocialSecurityBenefit", "income", "spouseSocialSecurityAmount", 0)),
             "spousePensionIncome": float(overrides.get("spousePensionIncome", 0))
         }
 
