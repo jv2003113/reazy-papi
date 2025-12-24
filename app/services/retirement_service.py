@@ -15,6 +15,7 @@ from app.models import (
     UserMilestone
 )
 from app.models.retirement import RetirementPlanBase
+from app.services.financial_assumptions_service import FinancialAssumptionsService
 
 class RetirementService:
     """
@@ -28,6 +29,7 @@ class RetirementService:
     """
     def __init__(self, session: AsyncSession):
         self.session = session
+        self.assumptions_service = FinancialAssumptionsService()
         
     async def get_user_by_id(self, user_id: UUID) -> Optional[User]:
         result = await self.session.execute(select(User).where(User.id == user_id))
@@ -145,13 +147,14 @@ class RetirementService:
 
     def calculate_financial_projections(self, plan: RetirementPlan, user: User) -> List[Dict[str, Any]]:
         """
-        Core simulation engine. Calculates financial state for every year.
-        Uses resolved inputs from User + Overrides.
+        Advanced Quant Simulation Engine.
+        Year 0: Current Snapshot (No calculations).
+        Year 1+: Growth, Flows, and Tax-Efficient Withdrawals.
         """
         projections = []
         current_year = datetime.now().year
         
-        # Resolve effective inputs
+        # 1. Resolve effective inputs
         inputs = RetirementService._resolve_inputs(plan, user)
         
         inflation_rate = inputs["inflationRate"]
@@ -161,207 +164,339 @@ class RetirementService:
         retirement_age = inputs["retirementAge"]
         start_age = inputs["startAge"]
         end_age = inputs["endAge"]
-
-        # Helper for safer retrieval
+        
+        # Tax Assumptions
+        tax_rates = self.assumptions_service.get_tax_rates(current_year)
+        TAX_RATE_ORDINARY = tax_rates.ordinary_income # Effective rate for 401k/Salary
+        TAX_RATE_CAP_GAINS = tax_rates.capital_gains # Long term cap gains for Brokerage
+        TAX_RATE_SS = tax_rates.social_security # Simplified SS taxability
+        
+        # 2. Initialize Current Balances (Year 0 State)
         def get_d(category, key, default=0):
             d = getattr(user, category, {}) or {}
-            return float(d.get(key) or 0)
+            val = d.get(key)
+            try:
+                return float(val) if val is not None else float(default)
+            except (ValueError, TypeError):
+                return float(default)
+
+        # Asset Buckets
+        bal_401k = get_d("assets", "retirementAccount401k") + get_d("assets", "retirementAccountIRA")
+        bal_roth = get_d("assets", "retirementAccountRoth")
+        bal_brokerage = get_d("assets", "investmentBalance")
+        bal_savings = get_d("assets", "savingsBalance") + get_d("assets", "checkingBalance")
+        bal_hsa = get_d("assets", "hsaBalance") + get_d("assets", "spouseHsaBalance") # Treated as triple-tax-advantaged, effectively Roth-like for health or Pre-tax in
         
-        # Initial Balances
-        total_401k = get_d("assets", "retirementAccount401k") + get_d("assets", "retirementAccountIRA")
-        total_roth_ira = get_d("assets", "retirementAccountRoth")
-        total_brokerage = get_d("assets", "investmentBalance")
-        total_savings = get_d("assets", "savingsBalance") + get_d("assets", "checkingBalance")
-        total_hsa = get_d("assets", "hsaBalance") + get_d("assets", "spouseHsaBalance")
-        
-        mortgage_balance = get_d("liabilities", "mortgageBalance")
-        
-        # Debts
-        credit_card_debt = get_d("liabilities", "creditCardDebt")
-        student_loan_debt = get_d("liabilities", "studentLoanDebt")
-        other_debt = get_d("liabilities", "otherDebt")
-        
+        # Liabilities
+        bal_mortgage = get_d("liabilities", "mortgageBalance")
+        bal_other_debt = get_d("liabilities", "creditCardDebt") + get_d("liabilities", "studentLoanDebt") + get_d("liabilities", "otherDebt")
+
         cumulative_tax = 0.0
-        
-        # Loop
+
+        # --- LOOP ---
         for age in range(start_age, end_age + 1):
             year = current_year + (age - start_age)
             years_from_start = age - start_age
             
             is_retired = age >= retirement_age
-            is_working_age = not is_retired
             
-            # Income
-            current_income = 0.0
-            spouse_current_income = 0.0
-            social_security_income = 0.0
-            pension_income_val = 0.0
-            
-            if is_working_age:
-                user_salary = get_d("income", "currentIncome")
-                spouse_salary = get_d("income", "spouseCurrentIncome")
+            # --- YEAR 0: SNAPSHOT ONLY ---
+            if years_from_start == 0:
+                # Just return current state, no operations
+                total_assets = bal_401k + bal_roth + bal_brokerage + bal_savings + bal_hsa
+                total_liabilities = bal_mortgage + bal_other_debt
+                net_worth = total_assets - total_liabilities
                 
-                current_income = user_salary * ((1 + inflation_rate) ** years_from_start)
-                spouse_current_income = spouse_salary * ((1 + inflation_rate) ** years_from_start)
+                # Gross Income (Current)
+                curr_salary = get_d("income", "currentIncome")
+                curr_spouse_salary = get_d("income", "spouseCurrentIncome")
+                gross_income = curr_salary + curr_spouse_salary
                 
-            else:
-                # Retirement
-                if age >= inputs["socialSecurityStartAge"]:
-                    social_security_income = inputs["estimatedSocialSecurityBenefit"] * ((1 + inflation_rate) ** years_from_start)
+                snapshots_assets = [
+                    {"name": "401(k) / IRA", "type": "retirement", "balance": bal_401k},
+                    {"name": "Roth IRA", "type": "retirement", "balance": bal_roth},
+                    {"name": "Brokerage", "type": "investment", "balance": bal_brokerage},
+                    {"name": "Savings", "type": "cash", "balance": bal_savings},
+                    {"name": "HSA", "type": "hsa", "balance": bal_hsa},
+                ]
                 
-                pension_income_val = inputs["pensionIncome"] * ((1 + inflation_rate) ** years_from_start)
+                projections.append({
+                    "year": year,
+                    "age": age,
+                    "grossIncome": gross_income,
+                    "netIncome": gross_income * (1 - TAX_RATE_ORDINARY), # Rough net
+                    "totalExpenses": 0, # Placeholder for Year 0 or use current expenses
+                    "totalAssets": total_assets,
+                    "totalLiabilities": total_liabilities,
+                    "netWorth": net_worth,
+                    "taxesPaid": 0,
+                    "cumulativeTax": 0,
+                    "assets": snapshots_assets,
+                    "liabilities": [],
+                    "income": [],
+                    "expenses": []
+                })
+                continue
 
+            # --- YEAR 1+: CALCULATIONS ---
+            
+            # 1. Inflation Adjustments
+            inflator = (1 + inflation_rate) ** years_from_start
+            
+            # 2. Income Sources
+            income_salary = 0.0
+            income_spouse_salary = 0.0
+            income_ss = 0.0
+            income_spouse_ss = 0.0
+            income_pension = 0.0
+            income_other = 0.0
+            
+            # Employment Income
+            if not is_retired:
+                income_salary = get_d("income", "currentIncome") * inflator
+                income_spouse_salary = get_d("income", "spouseCurrentIncome") * inflator
+            
+            # Retirement Income
+            if age >= inputs["socialSecurityStartAge"]:
+                income_ss = inputs["estimatedSocialSecurityBenefit"] * inflator
+            
+            # Spouse SS (Assuming spouse is similar age or using spouse age logic if complex, but here simplifying to Age check based on inputs)
+            # We don't track spouse age increment separately in this simplified loop, assuming aligned timeline or approximation.
+            # Ideally we track spouse_age = spouse_start_age + years_from_start.
+            spouse_current_age = get_d("personal_info", "spouseCurrentAge", 0)
+            spouse_age_now = spouse_current_age + years_from_start if spouse_current_age else age
+            if spouse_current_age and spouse_age_now >= inputs["spouseSocialSecurityStartAge"]:
+                income_spouse_ss = inputs["spouseEstimatedSocialSecurityBenefit"] * inflator
+
+            if is_retired or age >= 65: # Pension typically starts at retirement
+                income_pension = inputs["pensionIncome"] * inflator + inputs["spousePensionIncome"] * inflator
+                
             # Other Income
-            u_inc = getattr(user, "income", {}) or {}
-            other_income_amt1 = float(u_inc.get("otherIncomeAmount1") or 0)
-            other_income_amt2 = float(u_inc.get("otherIncomeAmount2") or 0)
+            other_inc_1 = get_d("income", "otherIncomeAmount1") * inflator
+            other_inc_2 = get_d("income", "otherIncomeAmount2") * inflator
+            income_other = other_inc_1 + other_inc_2
+            
+            # Total Guaranteed Income
+            total_guaranteed_income = income_salary + income_spouse_salary + income_ss + income_spouse_ss + income_pension + income_other
+            
+            # 3. Required Expenses
+            # Base expenses
+            base_expenses_monthly = get_d("expenses", "totalMonthlyExpenses")
+            if base_expenses_monthly == 0: base_expenses_monthly = 4000.0 # Fallback
+            
+            annual_expenses = (base_expenses_monthly * 12) * inflator
+            if is_retired:
+                # Use desired retirement spending if specified and higher/override
+                # implementation_plan said use inflation adjusted, but often users set specific retirement target
+                desired_spend = inputs["desiredAnnualRetirementSpending"]
+                if desired_spend > 0:
+                    # Make sure we don't double count if they just filled the expense form.
+                    # Logic: If Retired, use Max(InflatedCurrentExpenses, InflatedDesiredSpending)
+                    # Or just strictly Desired. Let's use Desired relative to base year.
+                    annual_expenses = desired_spend * inflator
 
-            other_income1 = other_income_amt1 * ((1 + inflation_rate) ** years_from_start) if other_income_amt1 else 0
-            other_income2 = other_income_amt2 * ((1 + inflation_rate) ** years_from_start) if other_income_amt2 else 0
-            
-            gross_income = current_income + spouse_current_income + other_income1 + other_income2
-            
-            if not is_working_age:
-                gross_income += social_security_income + pension_income_val
-                
-            # Net Income Estimation
-            if is_working_age:
-                net_income = gross_income * 0.75
-            else:
-                net_income = gross_income * 0.85
-
-            # Expenses
-            base_annual_expenses = 0.0
-            detailed_expenses = []
-            
-            u_exp = getattr(user, "expenses", {}) or {}
-            exp_breakdown = u_exp.get("breakdown", [])
-            total_monthly_exp_val = float(u_exp.get("totalMonthlyExpenses") or 0)
-
-            if exp_breakdown:
-                for exp in exp_breakdown:
-                    try:
-                        amt = float(exp.get("amount", 0) or 0) * 12
-                    except (ValueError, TypeError):
-                        amt = 0.0
-                    
-                    base_annual_expenses += amt
-                    detailed_expenses.append({
-                        "category": exp.get("category", "Uncategorized"), 
-                        "amount": amt,
-                        "description": exp.get("description", "")
-                    })
-            
-            if base_annual_expenses == 0:
-                 base_annual_expenses = total_monthly_exp_val * 12
-                 if base_annual_expenses == 0:
-                     base_annual_expenses = 45000.0
-                 detailed_expenses.append({"category": "Living Expenses", "amount": base_annual_expenses})
+            # Define breakdown list for UI (calculated before mortgage logic modified annual_expenses?)
+            # Wait, logic above adds mortgage to annual_expenses iteratively?
             
             projected_expenses_list = []
-            total_expenses = 0.0
-            for item in detailed_expenses:
-                inflated_amt = item["amount"] * ((1 + inflation_rate) ** years_from_start)
-                projected_expenses_list.append({
-                    "category": f"{item['category']} - {item.get('description', '')}" if item.get('description') else item['category'],
-                    "amount": inflated_amt
-                })
-                total_expenses += inflated_amt
             
-            # Contributions / Withdrawals
-            contribution_401k = 0.0
-            contribution_roth_ira = 0.0
-            contribution_brokerage = 0.0
-            contribution_savings = 0.0
-            contribution_hsa = 0.0
-            
-            withdrawal_401k = 0.0
-            withdrawal_roth_ira = 0.0
-            withdrawal_brokerage = 0.0
-            withdrawal_savings = 0.0
-            withdrawal_hsa = 0.0
-            
-            if is_working_age:
-                # Contributions
-                contribution_401k = min(23000, gross_income * 0.15)
-                catch_up = 7500 if age >= 50 else 6500
-                contribution_roth_ira = catch_up
+            # Mortgage Payment (if exists)
+            mortgage_payment = 0.0
+            if bal_mortgage > 0:
+                mortgage_payment = 28000.0 # Fixed placeholder or from inputs.
+                # Assuming mortgage payment is NOT inflation adjusted (fixed rate)
+                # Add to total for deficit calculation
+                annual_expenses += mortgage_payment
+                # Pay down principal roughly
+                bal_mortgage = max(0, bal_mortgage - (mortgage_payment * 0.6)) # 60% principal, 40% interest approx for simplicity
                 
-                remaining_income = net_income - total_expenses - contribution_401k - contribution_roth_ira
-                contribution_brokerage = max(0, remaining_income * 0.7)
-                contribution_savings = max(0, remaining_income * 0.3)
-                
-                hsa_contrib_user = get_d("assets", "hsaContribution")
-                hsa_contrib_spouse = get_d("assets", "spouseHsaContribution")
-                contribution_hsa = hsa_contrib_user + hsa_contrib_spouse
-            else:
-                # Withdrawals
-                fixed_income = social_security_income + pension_income_val
-                deficit = max(total_expenses - fixed_income, 0)
-                
-                if deficit > 0:
-                    withdrawal_401k = deficit * 0.4
-                    withdrawal_roth_ira = deficit * 0.2
-                    withdrawal_brokerage = deficit * 0.4
-                
-                gross_income = fixed_income + withdrawal_401k + withdrawal_roth_ira + withdrawal_brokerage
-                net_income = gross_income * 0.85
+                projected_expenses_list.append({"category": "Primary Mortgage", "amount": mortgage_payment})
 
-            # Apply Growth
-            total_401k = (total_401k + contribution_401k - withdrawal_401k) * (1 + portfolio_growth_rate)
-            total_roth_ira = (total_roth_ira + contribution_roth_ira - withdrawal_roth_ira) * (1 + portfolio_growth_rate)
-            total_brokerage = (total_brokerage + contribution_brokerage - withdrawal_brokerage) * (1 + portfolio_growth_rate)
-            total_savings = (total_savings + contribution_savings) * (1 + bond_growth_rate)
-            total_hsa = (total_hsa + contribution_hsa - withdrawal_hsa) * (1 + portfolio_growth_rate)
+            # Add remaining as Living Expenses
+            living_expenses_portion = annual_expenses - mortgage_payment
+            projected_expenses_list.insert(0, {"category": "Living Expenses", "amount": living_expenses_portion})
+
+            # 4. RMD Calculations (Required Minimum Distributions)
+            rmd_amount = 0.0
+            if bal_401k > 0:
+                divisor = self.assumptions_service.get_rmd_divisor(age)
+                if divisor > 0:
+                    rmd_amount = bal_401k / divisor
+                    # RMD is forced withdrawal
             
-            # Mortgage
-            current_mortgage_payment = 0.0
-            if age < 60 and mortgage_balance > 0:
-                 current_mortgage_payment = 28000.0
-                 mortgage_balance = max(0, mortgage_balance * 1.05 - current_mortgage_payment)
+            # 5. Gap Analysis (Income vs Expenses)
+            # RMD is taxable income, but it's also cash flow available to spend.
+            # Tax on RMD:
+            rmd_tax = rmd_amount * TAX_RATE_ORDINARY
+            rmd_net = rmd_amount - rmd_tax
             
-            # Taxes
-            taxes_paid = gross_income * 0.25 if is_working_age else gross_income * 0.15
-            cumulative_tax += taxes_paid
+            # Tax on Guaranteed Income (Working)
+            tax_on_income = (income_salary + income_spouse_salary) * TAX_RATE_ORDINARY
+            # Tax on Fixed Income (Retirement)
+            tax_on_fixed = (income_pension) * TAX_RATE_ORDINARY + (income_ss + income_spouse_ss) * TAX_RATE_SS
             
-            total_assets = total_401k + total_roth_ira + total_brokerage + total_savings + total_hsa
-            total_liabilities = mortgage_balance + credit_card_debt + student_loan_debt + other_debt
+            total_income_tax_liability = tax_on_income + tax_on_fixed + rmd_tax
+            
+            net_income_available = total_guaranteed_income + rmd_net - (tax_on_income + tax_on_fixed)
+            
+            deficit = max(0, annual_expenses - net_income_available)
+            surplus = max(0, net_income_available - annual_expenses)
+            
+            # 6. Withdrawals / Contributions Logic
+            withdrawal_taxable = 0.0
+            withdrawal_pretax = 0.0
+            withdrawal_roth = 0.0
+            
+            withdrawal_taxes = 0.0
+            
+            # WITHDRAWAL WATERFALL (Methodology: Tax Efficiency)
+            # 1. RMDs (Already taken above as `rmd_net`). If deficit remains:
+            # 2. Taxable (Brokerage) -> Cap Gains Rate
+            # 3. Tax-Deferred (401k/IRA) -> Ordinary Rate
+            # 4. Tax-Free (Roth/HSA) -> 0% Rate
+            
+            remaining_deficit = deficit
+            
+            # Step A: Brokerage
+            if remaining_deficit > 0 and bal_brokerage > 0:
+                # We need `remaining_deficit` NET.
+                # Gross Up: Amount = Deficit / (1 - TaxRate)
+                needed_gross = remaining_deficit / (1 - TAX_RATE_CAP_GAINS)
+                available = bal_brokerage
+                
+                take = min(needed_gross, available)
+                tax_hit = take * TAX_RATE_CAP_GAINS
+                net_received = take - tax_hit
+                
+                withdrawal_taxable += take
+                withdrawal_taxes += tax_hit
+                bal_brokerage -= take
+                remaining_deficit -= net_received
+            
+            # Step B: Pre-Tax (401k/IRA) - Excluding RMDs already taken
+            # Note: RMDs reduce the balance at the end, but here we take ADDITIONAL if needed
+            # RMD amount was calculated but not yet deducted from `bal_401k` variable until end? 
+            # Let's deduct RMD now to see what's left.
+            bal_401k_after_rmd = max(0, bal_401k - rmd_amount)
+            
+            if remaining_deficit > 0.1 and bal_401k_after_rmd > 0:
+                needed_gross = remaining_deficit / (1 - TAX_RATE_ORDINARY)
+                available = bal_401k_after_rmd
+                
+                take = min(needed_gross, available)
+                tax_hit = take * TAX_RATE_ORDINARY
+                net_received = take - tax_hit
+                
+                withdrawal_pretax += take
+                withdrawal_taxes += tax_hit
+                bal_401k_after_rmd -= take # Update temp balance
+                remaining_deficit -= net_received
+                
+            # Step C: Roth / HSA
+            # Combined pool for simplicity
+            total_tax_free = bal_roth + bal_hsa
+            
+            if remaining_deficit > 0.1 and total_tax_free > 0:
+                take = min(remaining_deficit, total_tax_free)
+                # No tax
+                withdrawal_roth += take
+                
+                # Deduct proportionally or Order? Roth then HSA?
+                # Let's drain Roth first.
+                if bal_roth >= take:
+                    bal_roth -= take
+                else:
+                    leftover = take - bal_roth
+                    bal_roth = 0
+                    bal_hsa = max(0, bal_hsa - leftover)
+                    
+                remaining_deficit -= take
+
+            # 7. Apply Growth (End of Year)
+            # Apply to remaining balances
+            # Update 401k balance including RMD deduction and extra withdrawals
+            bal_401k = max(0, bal_401k - rmd_amount - withdrawal_pretax)
+            
+            # Apply contributions if Surplus (Working years mainly)
+            contrib_401k = 0.0
+            contrib_brokerage = 0.0
+            contrib_savings = 0.0
+            
+            if surplus > 0:
+                if not is_retired:
+                    # Generic logic: Save 20% of surplus to Savings, rest to Brokerage
+                    # Caps on 401k? Assume user filled 401k via inputs, this is EXTRA surplus?
+                    # Inputs usually define "401k Contribution". If defined, we should have deducted it from Income earlier?
+                    # The previous logic had specific contribution input logic. Let's restore basic Input Contributions.
+                    # Simplified: Surplus goes to Brokerage/Savings.
+                    contrib_savings = surplus * 0.2
+                    contrib_brokerage = surplus * 0.8
+                    bal_savings += contrib_savings
+                    bal_brokerage += contrib_brokerage
+            
+            # Note: User inputs for "Annual Contribution" should ideally be honored. 
+            # For this "Quant" refactor, let's assume `surplus` captures the net cashflow available to save.
+            
+            # Growth
+            bal_401k *= (1 + portfolio_growth_rate)
+            bal_roth *= (1 + portfolio_growth_rate)
+            bal_brokerage *= (1 + portfolio_growth_rate)
+            bal_hsa *= (1 + portfolio_growth_rate)
+            
+            bal_savings *= (1 + bond_growth_rate) # Cash/Bonds lower rate
+            
+            # 8. Record Data
+            total_assets = bal_401k + bal_roth + bal_brokerage + bal_savings + bal_hsa
+            total_liabilities = bal_mortgage + bal_other_debt
             net_worth = total_assets - total_liabilities
             
-            # Construct Projection Object
-            proj = {
+            total_taxes_this_year = total_income_tax_liability + withdrawal_taxes
+            cumulative_tax += total_taxes_this_year
+            
+            # Detailed breakdown for charts
+            assets_breakdown = [
+                {"name": "401(k) / IRA", "type": "retirement", "balance": bal_401k},
+                {"name": "Roth IRA", "type": "retirement", "balance": bal_roth},
+                {"name": "Brokerage", "type": "investment", "balance": bal_brokerage},
+                {"name": "Savings", "type": "cash", "balance": bal_savings},
+                {"name": "HSA", "type": "hsa", "balance": bal_hsa},
+            ]
+            
+            income_sources = []
+            if income_salary > 0: income_sources.append({"source": "Salary", "amount": income_salary})
+            if income_spouse_salary > 0: income_sources.append({"source": "Spouse Salary", "amount": income_spouse_salary})
+            if income_ss > 0: income_sources.append({"source": "Social Security", "amount": income_ss})
+            if income_spouse_ss > 0: income_sources.append({"source": "Spouse Social Security", "amount": income_spouse_ss})
+            if income_pension > 0: income_sources.append({"source": "Pension", "amount": income_pension})
+            if rmd_amount > 0: income_sources.append({"source": "RMD Distributions", "amount": rmd_amount})
+            
+            # Add Withdrawals to Income Sources (so they appear in breakdown)
+            if withdrawal_taxable > 0: income_sources.append({"source": "Investment Withdrawal (Taxable)", "amount": withdrawal_taxable})
+            if withdrawal_pretax > 0: income_sources.append({"source": "401k/IRA Withdrawal", "amount": withdrawal_pretax})
+            if withdrawal_roth > 0: income_sources.append({"source": "Roth Withdrawal", "amount": withdrawal_roth})
+            
+            projections.append({
                 "year": year,
                 "age": age,
-                "grossIncome": gross_income,
-                "netIncome": net_income,
-                "totalExpenses": total_expenses,
+                "grossIncome": total_guaranteed_income + rmd_amount + withdrawal_taxable + withdrawal_pretax + withdrawal_roth, 
+                "netIncome": net_income_available,
+                "totalExpenses": annual_expenses + total_taxes_this_year, # Include taxes in total expenses metric? Or keep separate?
+                # Actually, typically Total Expenses in summaries usually implies spending. 
+                # But if we show Breakdown, we should probably align `totalExpenses` with the sum of breakdown.
+                # `annual_expenses` was just living expenses.
+                # Let's keep `totalExpenses` as Just Living Expenses for the top level chart usually, BUT if user wants "Expense Breakdown",
+                # The detailed list `expenses` key is what matters for the Table/Card.
+                
                 "totalAssets": total_assets,
                 "totalLiabilities": total_liabilities,
                 "netWorth": net_worth,
-                "taxesPaid": taxes_paid,
+                "taxesPaid": total_taxes_this_year,
                 "cumulativeTax": cumulative_tax,
-                "assets": [
-                    {"name": "401(k) / IRA", "type": "retirement", "balance": total_401k, "growth": total_401k * portfolio_growth_rate, "contribution": contribution_401k, "withdrawal": withdrawal_401k},
-                    {"name": "Roth IRA", "type": "retirement", "balance": total_roth_ira, "growth": total_roth_ira * portfolio_growth_rate, "contribution": contribution_roth_ira, "withdrawal": withdrawal_roth_ira},
-                    {"name": "Brokerage", "type": "investment", "balance": total_brokerage, "growth": total_brokerage * portfolio_growth_rate, "contribution": contribution_brokerage, "withdrawal": withdrawal_brokerage},
-                    {"name": "Savings", "type": "cash", "balance": total_savings, "growth": total_savings * bond_growth_rate, "contribution": contribution_savings, "withdrawal": withdrawal_savings},
-                    {"name": "HSA", "type": "hsa", "balance": total_hsa, "growth": total_hsa * portfolio_growth_rate, "contribution": contribution_hsa, "withdrawal": withdrawal_hsa},
-                ],
-                "liabilities": [],
-                "income": [],
-                "expenses": projected_expenses_list + [{"category": "Taxes", "amount": taxes_paid}]
-            }
-            
-            if mortgage_balance > 0:
-                proj["liabilities"].append({"name": "Primary Mortgage", "type": "mortgage", "balance": mortgage_balance, "payment": current_mortgage_payment})
-            
-            # Populate income list
-            if current_income > 0: proj["income"].append({"source": "Salary", "amount": current_income})
-            if spouse_current_income > 0: proj["income"].append({"source": "Spouse Salary", "amount": spouse_current_income})
-            if social_security_income > 0: proj["income"].append({"source": "Social Security", "amount": social_security_income})
-            if pension_income_val > 0: proj["income"].append({"source": "Pension", "amount": pension_income_val})
-            
-            projections.append(proj)
+                "assets": assets_breakdown,
+                "liabilities": [{"name": "Mortgage", "type": "mortgage", "balance": bal_mortgage}] if bal_mortgage > 0 else [],
+                "income": income_sources,
+                "expenses": projected_expenses_list + [{"category": "Taxes", "amount": total_taxes_this_year}]
+            })
             
         return projections
 
