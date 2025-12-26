@@ -35,7 +35,7 @@ class RefMilestone(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     title: str
     description: str
-    targetAge: int = Field(sa_column_kwargs={"name": "target_age"})
+    targetAge: float = Field(sa_column_kwargs={"name": "target_age"})
     category: str
     icon: str
     isActive: bool = Field(default=True, sa_column_kwargs={"name": "is_active"})

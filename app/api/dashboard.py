@@ -227,7 +227,7 @@ async def get_dashboard(
         "monthlyIncome": {
             "projected": int(projected_income),
             "goal": int(get_inc("currentIncome") * 0.8 / 12),
-            "percentOfCurrent": int(projected_income / (get_inc("currentIncome") or 1)/12 * 100),
+            "percentOfCurrent": int((projected_income / ((get_inc("currentIncome") or 1)/12)) * 100),
             "description": "Projected monthly income at retirement (full)",
             "targetYear": (datetime.now().year + (display_target_age - (get_pers("currentAge") or 30))) if plan else 2055
         },

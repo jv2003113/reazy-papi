@@ -72,9 +72,9 @@ class AIService:
         {json.dumps(existing_recommendations, indent=2)}
 
         INSTRUCTIONS:
-        1. Suggest 5 NEW recommendations that are NOT covered by existing goals, actions, or current recommendations.
-        2. Focus on high impact recommendations first.
-        3. Do not give vague recommendations, like optimize something, it should be a very sepcific recommendation
+        1. Suggest NEW recommendations that are NOT covered by existing goals, actions, or current recommendations.
+        2. Focus on high impact recommendations first. 
+        3. Include details of what you see in the plan that is prompting you to give the recommendation.  
         4. If the recommendation is for certain thresholds, like expense is greater than certain percent of income, set that up as a goal and provide both percent numbers as current and target.
         5. Return a JSON array of objects. Each object must strictly follow this schema:
            {{

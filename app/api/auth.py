@@ -12,6 +12,13 @@ from app.models.user import User
 
 router = APIRouter()
 
+# --- Google Auth Imports ---
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+
+class GoogleLoginRequest(BaseModel):
+    token: str
+
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -78,11 +85,14 @@ async def signup(
         )
     
     # 2. Create User
+    personal_info = {}
+    if signup_data.firstName: personal_info["firstName"] = signup_data.firstName
+    if signup_data.lastName: personal_info["lastName"] = signup_data.lastName
+
     user = User(
         email=signup_data.email,
         password=security.get_password_hash(signup_data.password),
-        firstName=signup_data.firstName,
-        lastName=signup_data.lastName
+        personal_info=personal_info
     )
     db.add(user)
     await db.commit()
@@ -140,3 +150,88 @@ async def update_password(
     await db.commit()
     
     return {"message": "Password updated successfully"}
+
+@router.post("/google", response_model=UserResponse)
+async def google_login(
+    response: Response,
+    google_data: GoogleLoginRequest,
+    db: AsyncSession = Depends(get_db)
+) -> Any:
+    # 1. Verify Google Token
+    try:
+        # We don't check audience here because we want to allow any valid token for this demo/setup. 
+        # In prod, pass CLIENT_ID as second arg.
+        id_info = id_token.verify_oauth2_token(google_data.token, google_requests.Request())
+        
+        # Extract info
+        email = id_info.get("email")
+        google_id = id_info.get("sub")
+        first_name = id_info.get("given_name")
+        last_name = id_info.get("family_name")
+        picture = id_info.get("picture")
+        
+        if not email:
+            raise ValueError("Email not found in token")
+            
+    except Exception as e:
+        print(f"Google Token Verification Error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid Google Token")
+
+    # 2. Find or Create User
+    # Strategy: Match by google_id first. If not found, match by email.
+    # If matching by email, link google_id.
+    
+    # Check by Google ID
+    query = select(User).where(User.googleId == google_id)
+    result = await db.execute(query)
+    user = result.scalars().first()
+    
+    if not user:
+        # Check by Email
+        query = select(User).where(User.email == email)
+        result = await db.execute(query)
+        user = result.scalars().first()
+        
+        if user:
+            # Existing email, link account
+            user.googleId = google_id
+            if not user.profilePicture and picture:
+                user.profilePicture = picture
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+        else:
+            # Store names in personal_info JSONB bucket
+            personal_info = {}
+            if first_name: personal_info["firstName"] = first_name
+            if last_name: personal_info["lastName"] = last_name
+            
+            user = User(
+                email=email,
+                password=None, # No password for OAuth
+                googleId=google_id,
+                profilePicture=picture,
+                personal_info=personal_info
+            )
+            
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+            
+    # 3. Create Session (JWT)
+    access_token = security.create_access_token(subject=user.id)
+    
+    response.set_cookie(
+        key="access_token",
+        value=f"{access_token}",
+        httponly=True,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        expires=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        samesite="lax",
+        secure=False
+    )
+    
+    return {
+        "message": "Login successful",
+        "user": user
+    }
