@@ -217,13 +217,25 @@ class FinancialAssumptionsService:
         # In reality, these index with inflation.
         return self.DEFAULT_CONTRIBUTION_LIMITS
 
-    def get_rmd_divisor(self, age: int) -> float:
+    def get_rmd_divisor(self, age: int, birth_year: Optional[int] = None) -> float:
         """
         Returns the RMD divisor for a given age based on the IRS Uniform Lifetime Table.
+        Incorporates SECURE 2.0 Act RMD age changes based on birth year.
         """
-        # SECURE 2.0 Act raised RMD age to 73 (and eventually 75).
-        # We'll use 73 as the starting point for now, returning 0 if under.
-        if age < 73:
+        # Determine RMD Start Age based on SECURE 2.0
+        rmd_start_age = 73 # Default fallback (1951-1959 cohort is current transition)
+        
+        if birth_year:
+            if birth_year <= 1950:
+                rmd_start_age = 72
+            elif 1951 <= birth_year <= 1959:
+                rmd_start_age = 73
+            else: # 1960 or later
+                rmd_start_age = 75
+        
+        if age < rmd_start_age:
+            # Technically you can take it earlier but it's not "Required"
+            # Divisor logic usually implies the minimum needed.
             return 0.0
             
         # If age is in table, use it. If strictly older than table, use last value (simplified)

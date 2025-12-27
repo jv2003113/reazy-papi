@@ -71,7 +71,12 @@ async def get_dashboard(
         get_asset("investmentBalance") + 
         get_asset("retirementAccount401k") + 
         get_asset("retirementAccountIRA") + 
-        get_asset("retirementAccountRoth")
+        get_asset("retirementAccountRoth") +
+        get_asset("hsaBalance") +
+        get_asset("spouseRetirementAccount401k") +
+        get_asset("spouseRetirementAccountIRA") +
+        get_asset("spouseRetirementAccountRoth") +
+        get_asset("spouseHsaBalance")
     )
     
     # Retirement Target & Progress Defaults
@@ -91,7 +96,12 @@ async def get_dashboard(
                 get_asset("investmentContribution") + 
                 get_asset("retirementAccount401kContribution") + 
                 get_asset("retirementAccountIRAContribution") + 
-                get_asset("retirementAccountRothContribution")
+                get_asset("retirementAccountRothContribution") +
+                get_asset("hsaContribution") +
+                get_asset("spouseRetirementAccount401kContribution") +
+                get_asset("spouseRetirementAccountIRAContribution") +
+                get_asset("spouseRetirementAccountRothContribution") +
+                get_asset("spouseHsaContribution")
             ) / 12
             savings_rate_amt = savings_monthly
             savings_rate_pct = int((savings_monthly / monthly_income) * 100)

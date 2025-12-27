@@ -355,11 +355,27 @@ class RetirementService:
             projected_expenses_list.insert(0, {"category": "Living Expenses", "amount": living_expenses_portion})
 
             # 4. RMD Calculations (Required Minimum Distributions)
+            # SECURE 2.0 Update: Use Birth Year to determine RMD age (72, 73, or 75)
+            # We calculate separately for User and Spouse if assets are split.
+            
             rmd_amount = 0.0
-            if bal_401k > 0:
-                divisor = self.assumptions_service.get_rmd_divisor(age)
-                if divisor > 0:
-                    rmd_amount = bal_401k / divisor
+            
+            # User RMD
+            user_birth_year = current_year - start_age
+            user_divisor = self.assumptions_service.get_rmd_divisor(age, user_birth_year)
+            if user_divisor > 0 and user_bal_401k > 0:
+                rmd_amount += user_bal_401k / user_divisor
+
+            # Spouse RMD
+            if inputs.get("spouseStartAge"):
+                spouse_current_age_val = float(inputs.get("spouseStartAge"))
+                spouse_birth_year = current_year - int(spouse_current_age_val)
+                # Spouse age in this simulation year
+                spouse_sim_age = int(spouse_current_age_val + years_from_start)
+                
+                spouse_divisor = self.assumptions_service.get_rmd_divisor(spouse_sim_age, spouse_birth_year)
+                if spouse_divisor > 0 and spouse_bal_401k > 0:
+                    rmd_amount += spouse_bal_401k / spouse_divisor
             
             # 5. ESTIMATED Tax Calculation (For Cash Flow Gap Analysis)
             # We don't know exact total income until we know withdrawals, but withdrawals depend on deficit (taxable).

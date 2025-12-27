@@ -125,6 +125,9 @@ class AIService:
             for r in recommendations:
                 if "status" not in r:
                     r["status"] = "active"
+
+                if "description" not in r or not r["description"]:
+                    r["description"] = f"AI Recommendation: {r.get('title', 'Financial Advice')}"
                 
                 if "category" not in r:
                     # Attempt to derive from data
