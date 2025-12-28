@@ -160,6 +160,78 @@ class AIService:
             return []
 
     @staticmethod
+    def extract_portfolio_from_file(
+        file_content: bytes,
+        mime_type: str,
+        user_id: str = "default"
+    ) -> dict:
+        """
+        Extracts portfolio data from a file (PDF/Image) using Google Gemini.
+        """
+        api_key = settings.GEMINI_API_KEY
+        if not api_key:
+            logger.warning("GEMINI_API_KEY not found. Skipping extraction.")
+            return {"error": "AI service not configured"}
+            
+        prompt = """
+        You are an intelligent financial data extraction assistant. 
+        Analyze the attached document (which may be a brokerage statement or screenshot) and extract all investment account and holding information.
+        
+        Return a JSON object with this structure:
+        {
+          "accounts": [
+            {
+              "accountName": "string (e.g. 'Individual Brokerage', 'Roth IRA')",
+              "accountType": "string (one of: '401k', 'roth_ira', 'traditional_ira', 'brokerage', 'hsa')",
+              "balance": number,
+              "holdings": [
+                {
+                   "ticker": "string (e.g. AAPL, VTI)",
+                   "name": "string (optional security name)",
+                   "percentage": "string (percentage of account, e.g. '25.5')",
+                   "amount": number (optional, dollar amount if percentage not available)
+                }
+              ]
+            }
+          ]
+        }
+        
+        Rules:
+        1. If multiple accounts are detected, list them all.
+        2. Infer account type from context (e.g. "IRA" -> "traditional_ira", "Roth" -> "roth_ira"). Default to "brokerage".
+        3. Extract holdings for each account. If holdings are mixed/unclear, do your best to assign them.
+        4. If a holding has no ticker (e.g. "Cash"), use symbol "CASH" or similar.
+        5. Return RAW JSON only. No markdown formatting.
+        """
+        
+        try:
+            from google import genai
+            from google.genai import types
+            
+            client = genai.Client(api_key=api_key)
+            
+            # Construct content with file part
+            response = client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part.from_bytes(data=file_content, mime_type=mime_type),
+                            types.Part.from_text(text=prompt)
+                        ]
+                    )
+                ]
+            )
+            
+            text = response.text.replace('```json', '').replace('```', '').strip()
+            return json.loads(text)
+            
+        except Exception as e:
+            logger.error(f"Gemini Extraction Error: {e}")
+            return {"error": str(e)}
+
+    @staticmethod
     def _generate_google(api_key: str, prompt: str) -> list[dict]:
         try:
             client = genai.Client(api_key=api_key)

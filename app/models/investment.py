@@ -1,8 +1,10 @@
-from typing import Optional, List
+from typing import Optional, List, Dict
 from uuid import UUID
 from decimal import Decimal
 from datetime import datetime
 from sqlmodel import SQLModel, Field, Relationship
+from sqlalchemy import Column
+from sqlalchemy.dialects.postgresql import JSONB
 from uuid6 import uuid7
 
 class InvestmentAccountBase(SQLModel):
@@ -26,6 +28,13 @@ class InvestmentAccount(InvestmentAccountBase, table=True):
     # Relationships
     allocations: List["AssetAllocation"] = Relationship(back_populates="account", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
     holdings: List["SecurityHolding"] = Relationship(back_populates="account", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
+
+class InvestmentAccountRead(InvestmentAccountBase):
+    id: UUID
+    createdAt: datetime
+    updatedAt: datetime
+    holdings: List["SecurityHolding"] = []
+
 
 class AssetAllocation(SQLModel, table=True):
     __tablename__ = "asset_allocations"
@@ -52,3 +61,13 @@ class SecurityHolding(SQLModel, table=True):
     updatedAt: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"name": "updated_at"})
 
     account: InvestmentAccount = Relationship(back_populates="holdings")
+
+class RefFund(SQLModel, table=True):
+    __tablename__ = "ref_funds"
+    ticker: str = Field(primary_key=True)
+    name: str
+    assetClass: str = Field(sa_column_kwargs={"name": "asset_class"}) # stock, bond, real_estate, other
+    region: str = Field(default="domestic") # domestic, international, emerging, global
+    expenseRatio: Optional[Decimal] = Field(default=None, max_digits=5, decimal_places=4, sa_column_kwargs={"name": "expense_ratio"})
+    sectors: Optional[Dict[str, float]] = Field(default=None, sa_column=Column(JSONB)) # JSONB for sector breakdown
+    createdAt: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"name": "created_at"})

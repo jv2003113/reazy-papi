@@ -155,7 +155,11 @@ class RetirementService:
             "spouseRetirementAccount401kContribution": float(val("spouseRetirementAccount401kContribution", "assets", "spouseRetirementAccount401kContribution", 0)),
             "spouseRetirementAccountIRAContribution": float(val("spouseRetirementAccountIRAContribution", "assets", "spouseRetirementAccountIRAContribution", 0)),
             "spouseRetirementAccountRothContribution": float(val("spouseRetirementAccountRothContribution", "assets", "spouseRetirementAccountRothContribution", 0)),
-            "spouseHsaContribution": float(val("spouseHsaContribution", "assets", "spouseHsaContribution", 0))
+            "spouseHsaContribution": float(val("spouseHsaContribution", "assets", "spouseHsaContribution", 0)),
+
+            # Roth Strategy
+            "enableRothConversions": bool(val("enableRothConversions", "risk", "enableRothConversions", False)),
+            "rothConversionTaxBracketLimit": str(val("rothConversionTaxBracketLimit", "risk", "rothConversionTaxBracketLimit", "optimize"))
         }
 
     def calculate_financial_projections(self, plan: RetirementPlan, user: User) -> List[Dict[str, Any]]:
@@ -451,16 +455,56 @@ class RetirementService:
             
             if remaining_deficit > 0.1 and bal_401k_after_rmd > 0:
                 # Ordinary Income
-                needed_gross = remaining_deficit / (1 - marginal_rate)
-                available = bal_401k_after_rmd
+                # Iterative Solver for Needed Gross
+                # Must account for:
+                # 1. Marginal Ordinary Rate
+                # 2. Impact on Capital Gains Rate (if 0% -> 15% etc)
                 
+                target_net = remaining_deficit
+                
+                # Base Tax State (Before 401k withdrawal)
+                # est_fed_tax is base. withdrawal_taxes_added has Step A tax.
+                # But careful: withdrawal_taxes_added might be just Step A's *estimate*?
+                # Step A calculated `tax_on_withdrawal` using `ordinary_income_base`.
+                # We need to re-calculate Total Tax Liability dynamically.
+                
+                # Define helper to get Total Tax
+                def get_total_tax(ord_inc):
+                    fed = self.assumptions_service.calculate_federal_income_tax(ord_inc, filing_status)
+                    cap = self.assumptions_service.calculate_capital_gains_tax(ord_inc, withdrawal_taxable, filing_status) # withdrawal_taxable from Step A
+                    return fed + cap
+
+                current_total_tax = get_total_tax(ordinary_income_base)
+                
+                # Initial Guess
+                current_rate = marginal_rate
+                needed_gross = target_net / (1 - current_rate)
+                
+                # Refine Guess (max 5 iterations for stability)
+                for _ in range(5):
+                    # Calculate tax on this guessing gross
+                    est_total_new = get_total_tax(ordinary_income_base + needed_gross)
+                    est_tax_impact = est_total_new - current_total_tax
+                    
+                    est_net = needed_gross - est_tax_impact
+                    
+                    diff = target_net - est_net
+                    if abs(diff) < 1.0:
+                        break
+                    
+                    # Update guess
+                    # Use effective marginal rate from this step to scale
+                    # If we are stuck, just add diff?
+                    needed_gross += diff # Simple step often works if rate is stable, but if rate jumps, might overshoot.
+                    # Let's divide by (1-rate) roughly
+                    needed_gross += diff / (1 - current_rate) # Keep using base rate for gradient
+                
+                available = bal_401k_after_rmd
                 take = min(needed_gross, available)
                 
-                # Tax Impact
-                # Re-calc tax with added ordinary
-                base_tax = est_fed_tax
-                new_tax = self.assumptions_service.calculate_federal_income_tax(ordinary_income_base + take, filing_status)
-                tax_on_withdrawal = new_tax - base_tax
+                # Tax Impact Final Calc
+                new_total_tax_final = get_total_tax(ordinary_income_base + take)
+                tax_on_withdrawal = new_total_tax_final - current_total_tax
                 
                 withdrawal_pretax += take
                 withdrawal_taxes_added += tax_on_withdrawal
@@ -469,7 +513,7 @@ class RetirementService:
                 bal_401k_after_rmd -= take
                 remaining_deficit -= net_received
                 
-                # Update Ordinary Base for subsequent steps (though usually none tax-impacting after this)
+                # Update Ordinary Base for subsequent steps (Roth Conversions rely on this)
                 ordinary_income_base += take
                 
             # Step C: Roth / HSA
@@ -488,10 +532,84 @@ class RetirementService:
                     
                 remaining_deficit -= take
 
+            # Step 6.5: Roth Conversions
+            conversion_amount = 0.0
+            
+            # Valid for conversion: Has 401k, enabled, and (Optional) Age limit? Usually any age.
+            avail_401k = max(0, bal_401k - rmd_amount - withdrawal_pretax)
+            
+            if inputs["enableRothConversions"] and avail_401k > 0:
+                # Determine Limit
+                brackets = self.assumptions_service.TAX_BRACKETS_2024.get(filing_status, self.assumptions_service.TAX_BRACKETS_2024["single"])
+                limit_setting = inputs["rothConversionTaxBracketLimit"]
+                
+                target_limit = float('inf')
+                
+                if limit_setting == "optimize":
+                    # AUTO-OPTIMIZE STRATEGY
+                    # Heuristic: Fill up to the top of the 22% bracket (or 12% if income is very low).
+                    # 12% Top (2024): ~47k (S), ~94k (MFJ)
+                    # 22% Top (2024): 100k (S), 200k (MFJ)
+                    
+                    # Logic: If we are under 12% limit, fill to 12%.
+                    # If we are under 22% limit, fill to 22%.
+                    # Avoid crossing into 24%+.
+                    
+                    # Brackets: [(0, 10), (11600, 12), (47150, 22), (100525, 24)]
+                    # Index 2 (47150) is start of 22%. Index 3 (100525) is start of 24%.
+                    limit_12 = brackets[2][0]
+                    limit_22 = brackets[3][0]
+                    
+                    # Check where we are naturally
+                    # Taxable Income = Ordinary Base - Deductions
+                    std_ded = self.assumptions_service.STANDARD_DEDUCTION_2024.get(filing_status, 14600)
+                    current_taxable = max(0, ordinary_income_base - std_ded)
+                    
+                    if current_taxable < limit_12:
+                        target_limit = limit_12
+                    else:
+                        target_limit = limit_22
+                else:
+                    # User Selected Bracket Limit
+                    # "10", "12", "22", "24", "32"
+                    # Map to the START of the NEXT bracket (which is the top of current)
+                    mapping = {"10": 1, "12": 2, "22": 3, "24": 4, "32": 5}
+                    idx = mapping.get(limit_setting, 3)
+                    if idx < len(brackets):
+                        target_limit = brackets[idx][0]
+                
+                # Calculate Room
+                std_ded = self.assumptions_service.STANDARD_DEDUCTION_2024.get(filing_status, 14600)
+                current_ordinary_taxable = max(0, ordinary_income_base - std_ded)
+                
+                if target_limit > current_ordinary_taxable:
+                    room = target_limit - current_ordinary_taxable
+                    potential_convert = min(room, avail_401k)
+                    
+                    # Liquidity Check: Pay taxes from brokerage?
+                    # Simplify: We just assume we convert and pay taxes.
+                    # If we run out of brokerage, we stop?
+                    # For MVP: Just convert. The tax bill will be added to `taxesPaid`.
+                    # If `taxesPaid` > `income`, we have a deficit.
+                    # The simulation loop handles deficit by withdrawing from portfolio in NEXT year? 
+                    # No, we handle deficit in THIS year (Steps 6 A/B/C). 
+                    # But we are PAST Step 6.
+                    # If we create a NEW deficit due to taxes, we effectively lower Net Worth 
+                    # and might have negative cash flow for the year shown in charts.
+                    # This is acceptable for a "Strategy" simulation: it shows the cost.
+                    # Ideally we pay it from Brokerage now.
+                    
+                    est_tax_impact = potential_convert * 0.22 # Rough estimate or recalc?
+                    # Let's just do it.
+                    
+                    conversion_amount = potential_convert
+                    bal_roth += conversion_amount
+                    # bal_401k reduced in Sync step below
+
             # 7. Finalize Year
             
             # Recalculate Final Tax Liability with exact totals
-            final_ordinary_income = income_salary + income_spouse_salary + income_pension + income_other + rmd_amount + taxable_ss + withdrawal_pretax
+            final_ordinary_income = income_salary + income_spouse_salary + income_pension + income_other + rmd_amount + taxable_ss + withdrawal_pretax + conversion_amount
             final_cap_gains = withdrawal_taxable # Assuming 100% gain
             
             final_fed_tax = self.assumptions_service.calculate_federal_income_tax(final_ordinary_income, filing_status)
@@ -500,13 +618,65 @@ class RetirementService:
             total_tax_paid = final_fed_tax + final_cap_tax
             cumulative_tax += total_tax_paid
             
+            # Automatic Payment of Conversion Tax from Brokerage (if available)
+            # If we don't do this, Net Worth drops (correct), but Assets don't drop to pay it, 
+            # effectively "borrowing" for tax.
+            # To be accurate: Reduce Brokerage by the *incremental* tax caused by conversion.
+            # But we already summed total tax.
+            # Let's leave it as "Expense" that reduces Net Worth. 
+            # In Recalc of Year 0 next loop, we rely on `total_assets`.
+            # Wait, `total_assets` is calculated at END of loop (Line 596).
+            # It uses `bal_brokerage` etc.
+            # If we don't reduce `bal_brokerage` by `total_tax_paid`, we are overstating assets!
+            # The current code DOES NIETHER.
+            # Look at Line 624: `netIncome` = Gross - Tax.
+            # `totalExpenses` includes Tax.
+            # But the *Balances* (bal_brokerage, etc.) are only reduced by Withdrawals (Step 6).
+            # Expenses (Living) are assumed paid by Income.
+            # Deficit was Withdrawals.
+            # If Tax > (Income - Expenses), we have a problem.
+            # The code assumes `est_fed_tax` (Line 391) covers the tax.
+            # Step 6 uses `remaining_deficit = required_outflow - total_inflow`.
+            # `required_outflow` INCLUDED `est_fed_tax`.
+            # So the "Base Tax" was already "withdrawn" (covered) by Step 6.
+            # The "Incremental Tax" from Conversion is NEW.
+            # We must pay this.
+            
+            incremental_tax = total_tax_paid - (total_tax_paid - (final_fed_tax - self.assumptions_service.calculate_federal_income_tax(final_ordinary_income - conversion_amount, filing_status)))
+            # actually `final_fed_tax` includes conversion.
+            # Tax due to conversion ~ (final_fed_tax_with_conv - final_fed_tax_without_conv).
+            
+            # To keep it simple: WE MUST REDUCE ASSETS BY `total_tax_paid`? 
+            # No, `est_fed_tax` was used to calculate Withdrawals.
+            # So `bal_brokerage` etc. were ALREADY reduced by enough to pay `est_fed_tax`.
+            # We only need to reduce by the DIFFERENCE (`total_tax_paid - est_fed_tax`).
+            
+            tax_underpayment = total_tax_paid - (est_fed_tax + withdrawal_taxes_added)
+            # `withdrawal_taxes_added` tracks tax on withdrawals.
+            # `est_fed_tax` tracks tax on base income.
+            
+            if tax_underpayment > 0:
+                # Pay from Brokerage first
+                if bal_brokerage >= tax_underpayment:
+                    bal_brokerage -= tax_underpayment
+                else:
+                    # Deplete brokerage
+                    leftover = tax_underpayment - bal_brokerage
+                    bal_brokerage = 0
+                    # Deplete Savings?
+                    if bal_savings >= leftover:
+                        bal_savings -= leftover
+                    else:
+                        bal_savings = 0
+                        # Implicit debt / reduce Net Worth (handled by reporting)
+            
             # Apply Contributions (If Working)
             
             # Sync Sub-Balances (Proportional Reduction if Withdrawals occurred)
             # 401k
             prev_total_401k = user_bal_401k + spouse_bal_401k
-            # Balance available before growth but AFTER withdrawals
-            bal_401k_post_wd = max(0, bal_401k - rmd_amount - withdrawal_pretax)
+            # Balance available before growth but AFTER withdrawals AND CONVERSIONS
+            bal_401k_post_wd = max(0, bal_401k - rmd_amount - withdrawal_pretax - conversion_amount)
             
             if prev_total_401k > 0:
                 remaining_ratio = bal_401k_post_wd / prev_total_401k
@@ -616,12 +786,13 @@ class RetirementService:
             if withdrawal_taxable > 0: income_sources.append({"source": "Investment Withdrawal (Taxable)", "amount": withdrawal_taxable})
             if withdrawal_pretax > 0: income_sources.append({"source": "401k/IRA Withdrawal", "amount": withdrawal_pretax})
             if withdrawal_roth > 0: income_sources.append({"source": "Roth Withdrawal", "amount": withdrawal_roth})
+            if conversion_amount > 0: income_sources.append({"source": "Roth Conversion", "amount": conversion_amount})
             
             projections.append({
                 "year": year,
                 "age": age,
-                "grossIncome": total_guaranteed_income + rmd_amount + withdrawal_taxable + withdrawal_pretax + withdrawal_roth, 
-                "netIncome": (total_guaranteed_income + rmd_amount + withdrawal_taxable + withdrawal_pretax + withdrawal_roth) - total_tax_paid,
+                "grossIncome": total_guaranteed_income + rmd_amount + withdrawal_taxable + withdrawal_pretax + withdrawal_roth + conversion_amount, 
+                "netIncome": (total_guaranteed_income + rmd_amount + withdrawal_taxable + withdrawal_pretax + withdrawal_roth + conversion_amount) - total_tax_paid,
                 "totalExpenses": annual_expenses + total_tax_paid, 
                 "totalAssets": total_assets,
                 "totalLiabilities": total_liabilities,
