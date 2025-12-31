@@ -40,12 +40,14 @@ class Settings(BaseSettings):
 
     # AI
     GEMINI_API_KEY: Optional[str] = None
+    GOOGLE_MODEL: str = "gemini-2.0-flash"
     AI_CACHE_ENABLED: bool = True
     
     # Ollama / Local AI
     AI_PROVIDER: str = "google" # 'google' or 'ollama'
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "deepseek-r1:latest"
+    OLLAMA_VISION_MODEL: str = "llama3.2-vision"
 
     model_config = SettingsConfigDict(
         env_file=".env", 

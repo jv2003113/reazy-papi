@@ -63,10 +63,11 @@ class RetirementService:
 
         Steps:
         1. Validates the user exists.
-        2. Clears any existing snapshot/milestone data for this plan ID to ensure a clean slate.
-        3. Calls `calculate_financial_projections` to run the simulation in memory.
-        4. Calls `create_annual_snapshots` to save the results to the database.
-        5. Updates the parent Plan record with summary stats (e.g. Total Lifetime Tax).
+        2. Sync Portfolio Data (if enabled)
+        3. Clears any existing snapshot/milestone data for this plan ID to ensure a clean slate.
+        4. Calls `calculate_financial_projections` to run the simulation in memory.
+        5. Calls `create_annual_snapshots` to save the results to the database.
+        6. Updates the parent Plan record with summary stats (e.g. Total Lifetime Tax).
         
         Args:
             plan (RetirementPlan): The plan object containing parameters (ages, rates, etc.).
@@ -79,11 +80,76 @@ class RetirementService:
         if not user:
             raise ValueError(f"User {plan.userId} not found")
 
+        # SYNC PORTFOLIO DATA
+        portfolio_overrides = {}
+        assets = user.assets or {}
+        if assets.get("use_portfolio_sync"):
+            from app.models.investment import InvestmentAccount
+            from sqlalchemy.orm import selectinload
+            
+            # Fetch all accounts with type info
+            stmt = select(InvestmentAccount).options(selectinload(InvestmentAccount.accountTypeRef)).where(InvestmentAccount.userId == user.id)
+            res = await self.session.execute(stmt)
+            accounts = res.scalars().all()
+            
+            # Initialize buckets
+            sync_data = {
+                "retirementAccount401k": Decimal(0),
+                "retirementAccountIRA": Decimal(0),
+                "retirementAccountRoth": Decimal(0),
+                "hsaBalance": Decimal(0),
+                
+                "spouseRetirementAccount401k": Decimal(0),
+                "spouseRetirementAccountIRA": Decimal(0),
+                "spouseRetirementAccountRoth": Decimal(0),
+                "spouseHsaBalance": Decimal(0),
+                
+                "investmentBalance": Decimal(0)
+            }
+            
+            for acc in accounts:
+                code = acc.accountTypeRef.code if acc.accountTypeRef else "other"
+                owner = acc.accountOwner # primary, spouse, joint
+                bal = acc.balance
+                
+                # Brokerage (Joint or Primary or Spouse -> all goes to investmentBalance for now as per calc logic)
+                if code in ['brokerage', 'taxable', 'trust', 'custodial']:
+                    sync_data["investmentBalance"] += bal
+                    continue
+                
+                # Retirement & HSA
+                target_key = None
+                
+                # Map Code to Base Key
+                base_key = None
+                if code in ['401k', '403b', '457', 'tsp', 'solo_401k']:
+                    base_key = "retirementAccount401k"
+                elif code in ['ira', 'sep_ira', 'simple_ira', 'traditional_ira', 'inherited_ira']:
+                     base_key = "retirementAccountIRA"
+                elif code in ['roth_ira', 'roth_401k']:
+                     base_key = "retirementAccountRoth"
+                elif code in ['hsa']:
+                     base_key = "hsaBalance"
+                
+                if base_key:
+                    if owner == 'spouse':
+                        target_key = "spouse" + base_key[0].upper() + base_key[1:]
+                        if base_key == "hsaBalance": target_key = "spouseHsaBalance" 
+                    else:
+                        target_key = base_key
+                        
+                    if target_key in sync_data:
+                        sync_data[target_key] += bal
+
+            # Convert to float for overrides
+            for k, v in sync_data.items():
+                portfolio_overrides[k] = float(v)
+
         # Clear existing data
         await self.clear_plan_data(plan.id)
 
-        # Calculate projections
-        projections = self.calculate_financial_projections(plan, user)
+        # Calculate projections with overrides
+        projections = self.calculate_financial_projections(plan, user, portfolio_overrides)
 
         # Persistence
         await self.create_annual_snapshots(plan, projections)
@@ -99,19 +165,26 @@ class RetirementService:
         return plan
 
     @staticmethod
-    def _resolve_inputs(plan: RetirementPlan, user: User) -> Dict[str, Any]:
+    def _resolve_inputs(plan: RetirementPlan, user: User, portfolio_overrides: Dict[str, float] = None) -> Dict[str, Any]:
         """
         Resolves the effective plan configuration.
-        Priority: Plan Overrides > User Profile (JSONB) > System Defaults
+        Priority: Plan Overrides > Portfolio Sync (if passed) > User Profile (JSONB) > System Defaults
         """
         overrides = plan.planOverrides or {}
+        portfolio_overrides = portfolio_overrides or {}
         
         # Helper to safely get from nested JSONB
         def val(key, category, attr, default):
+            # 1. Plan-level Simulation Overrides (e.g. "What If" scenarios) - Highest Priority
             if key in overrides:
                 return overrides[key]
             
-            # Access user category (dict)
+            # 2. Portfolio Sync Overrides
+            # Checks if we have an override from portfolio sync for this key
+            if key in portfolio_overrides:
+                return portfolio_overrides[key]
+            
+            # 3. User Profile (Manual Input)
             cat_dict = getattr(user, category, {}) or {}
             u_val = cat_dict.get(attr)
             return u_val if u_val is not None else default
@@ -162,7 +235,7 @@ class RetirementService:
             "rothConversionTaxBracketLimit": str(val("rothConversionTaxBracketLimit", "risk", "rothConversionTaxBracketLimit", "optimize"))
         }
 
-    def calculate_financial_projections(self, plan: RetirementPlan, user: User) -> List[Dict[str, Any]]:
+    def calculate_financial_projections(self, plan: RetirementPlan, user: User, portfolio_overrides: Dict[str, float] = None) -> List[Dict[str, Any]]:
         """
         Advanced Quant Simulation Engine.
         Year 0: Current Snapshot (No calculations).
@@ -170,9 +243,10 @@ class RetirementService:
         """
         projections = []
         current_year = datetime.now().year
+        portfolio_overrides = portfolio_overrides or {}
         
         # 1. Resolve effective inputs
-        inputs = RetirementService._resolve_inputs(plan, user)
+        inputs = RetirementService._resolve_inputs(plan, user, portfolio_overrides)
         
         inflation_rate = inputs["inflationRate"]
         portfolio_growth_rate = inputs["portfolioGrowthRate"]
@@ -192,6 +266,11 @@ class RetirementService:
         
         # 2. Initialize Current Balances (Year 0 State)
         def get_d(category, key, default=0):
+            # 1. Portfolio Sync Override (for assets)
+            if category == "assets" and portfolio_overrides and key in portfolio_overrides:
+                return float(portfolio_overrides[key])
+
+            # 2. User Data
             d = getattr(user, category, {}) or {}
             val = d.get(key)
             try:

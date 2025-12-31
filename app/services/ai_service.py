@@ -1,5 +1,5 @@
 import os
-from google import genai
+
 import json
 import logging
 import time
@@ -159,6 +159,7 @@ class AIService:
             logger.error(f"Error generating AI recommendations: {e}")
             return []
 
+
     @staticmethod
     def extract_portfolio_from_file(
         file_content: bytes,
@@ -166,13 +167,9 @@ class AIService:
         user_id: str = "default"
     ) -> dict:
         """
-        Extracts portfolio data from a file (PDF/Image) using Google Gemini.
+        Extracts portfolio data from a file (PDF/Image) using the configured AI Provider.
         """
-        api_key = settings.GEMINI_API_KEY
-        if not api_key:
-            logger.warning("GEMINI_API_KEY not found. Skipping extraction.")
-            return {"error": "AI service not configured"}
-            
+        # Prepare Prompt (Shared)
         prompt = """
         You are an intelligent financial data extraction assistant. 
         Analyze the attached document (which may be a brokerage statement or screenshot) and extract all investment account and holding information.
@@ -198,45 +195,118 @@ class AIService:
         
         Rules:
         1. If multiple accounts are detected, list them all.
-        2. Infer account type from context (e.g. "IRA" -> "traditional_ira", "Roth" -> "roth_ira"). Default to "brokerage".
-        3. Extract holdings for each account. If holdings are mixed/unclear, do your best to assign them.
+        2. **CRITICAL**: The 'balance' field MUST be the total value of the account (e.g. 'Total Account Value', 'Ending Balance', 'Portfolio Value').
+           - If you cannot find an explicit 'Total' line, you MUST calculate the balance by summing the values of the individual holdings.
+           - Ensure the 'balance' is NOT just the value of the first holding found.
+           - The balance should be typically >= the sum of holdings.
+        3. Account Type Mapping (Stricly enforce these values):
+           - "401k": For 401(k), 403(b), 457, or similar employer plans.
+           - "roth_ira": For Roth IRAs (Contributory, Rollover, etc).
+           - "traditional_ira": For Traditional IRAs, SEP IRAs, Simple IRAs, Rollover IRAs.
+           - "hsa": For Health Savings Accounts.
+           - "brokerage": For invalid types, individual/joint taxable accounts, or if unsure.
+        3. Extract holdings for each account. 
+           - **CRITICAL**: Look for columns labeled "Market Value", "Current Value", "Amount", or similar. 
+           - Map this directly to the "amount" field in the JSON.
+           - Do not ignore the dollar value if it is present.
         4. If a holding has no ticker (e.g. "Cash"), use symbol "CASH" or similar.
         5. Return RAW JSON only. No markdown formatting.
         """
+
+        provider = (settings.AI_PROVIDER or "google").lower()
         
         try:
-            from google import genai
-            from google.genai import types
+            if provider == "ollama":
+                logger.info(f"Extracting with Ollama ({settings.OLLAMA_VISION_MODEL})")
+                return AIService._extract_ollama(file_content, mime_type, prompt)
             
-            client = genai.Client(api_key=api_key)
+            elif provider == "google":
+                api_key = settings.GEMINI_API_KEY
+                if not api_key:
+                    logger.warning("GEMINI_API_KEY not found. Skipping Google extraction.")
+                    return {"error": "AI service not configured"}
+                return AIService._extract_google(api_key, file_content, mime_type, prompt)
             
-            # Construct content with file part
-            response = client.models.generate_content(
-                model='gemini-2.0-flash',
-                contents=[
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part.from_bytes(data=file_content, mime_type=mime_type),
-                            types.Part.from_text(text=prompt)
-                        ]
-                    )
-                ]
-            )
-            
-            text = response.text.replace('```json', '').replace('```', '').strip()
-            return json.loads(text)
-            
+            else:
+                 logger.warning(f"Unknown AI provider {provider}")
+                 return {"error": "Unknown AI provider"}
+
         except Exception as e:
-            logger.error(f"Gemini Extraction Error: {e}")
+            logger.error(f"Extraction Error: {e}")
             return {"error": str(e)}
 
     @staticmethod
+    def _extract_google(api_key: str, file_content: bytes, mime_type: str, prompt: str) -> dict:
+        from google import genai
+        from google.genai import types
+        
+        client = genai.Client(api_key=api_key)
+        
+        response = client.models.generate_content(
+            model=settings.GOOGLE_MODEL,
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_bytes(data=file_content, mime_type=mime_type),
+                        types.Part.from_text(text=prompt)
+                    ]
+                )
+            ]
+        )
+        
+        text = response.text.replace('```json', '').replace('```', '').strip()
+        return json.loads(text)
+
+    @staticmethod
+    def _extract_ollama(file_content: bytes, mime_type: str, prompt: str) -> dict:
+        import base64
+        import urllib.request
+        import re
+
+        # Encode image to base64
+        b64_image = base64.b64encode(file_content).decode('utf-8')
+        
+        url = f"{settings.OLLAMA_BASE_URL}/api/generate"
+        payload = {
+            "model": settings.OLLAMA_VISION_MODEL, 
+            "prompt": prompt,
+            "images": [b64_image],
+            "stream": False,
+            "format": "json"
+        }
+        
+        try:
+            data = json.dumps(payload).encode('utf-8')
+            req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req) as response:
+                res_body = response.read().decode('utf-8')
+                res_json = json.loads(res_body)
+                
+                text = res_json.get("response", "").strip()
+                
+                # Strip <think> (DeepSeek)
+                text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+                
+                # Clean Markdown
+                text = text.replace('```json', '').replace('```', '').strip()
+                
+                if not text:
+                     raise ValueError("Empty response from Ollama")
+
+                return json.loads(text)
+                
+        except Exception as e:
+            logger.error(f"Ollama Extraction Error: {e}")
+            raise e
+
+    @staticmethod
     def _generate_google(api_key: str, prompt: str) -> list[dict]:
+        from google import genai
         try:
             client = genai.Client(api_key=api_key)
             response = client.models.generate_content(
-                model='gemini-2.0-flash',
+                model=settings.GOOGLE_MODEL,
                 contents=prompt
             )
             text = response.text.replace('```json', '').replace('```', '').strip()

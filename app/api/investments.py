@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api import deps
-from app.models import User, InvestmentAccount, SecurityHolding, RefFund, InvestmentAccountRead
+from app.models import User, InvestmentAccount, SecurityHolding, RefFund, InvestmentAccountRead, InvestmentAccountUpdate, InvestmentAccountCreate
 
 router = APIRouter()
 
@@ -67,6 +67,30 @@ async def seed_funds(db: AsyncSession):
 
 # --- INVESTMENT ACCOUNTS ---
 
+from datetime import datetime
+from decimal import Decimal
+from typing import List
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
+
+from app.api import deps
+from app.models.user import User
+from app.models.investment import (
+    InvestmentAccount,
+    InvestmentAccountRead,
+    InvestmentAccountUpdate,
+    SecurityHolding,
+    RefFund,
+    RefAccountType
+)
+from uuid import uuid4
+
+
+
 @router.get("/users/{user_id}/investment-accounts", response_model=List[InvestmentAccountRead])
 async def get_user_investment_accounts(
     user_id: UUID,
@@ -76,97 +100,279 @@ async def get_user_investment_accounts(
     if current_user.id != user_id:
         raise HTTPException(status_code=403, detail="Not authorized")
     
-    # 1. Fetch existing DB accounts with holdings
-    query = select(InvestmentAccount).where(InvestmentAccount.userId == user_id).options(selectinload(InvestmentAccount.holdings))
+    # Fetch existing DB accounts with holdings and type reference
+    query = select(InvestmentAccount)\
+        .where(InvestmentAccount.userId == user_id)\
+        .options(selectinload(InvestmentAccount.holdings), selectinload(InvestmentAccount.accountTypeRef))
+    
     result = await db.execute(query)
     db_accounts = result.scalars().all()
     
-    # 2. SYNC LOGIC: Check User JSON assets and ensure accounts exist
-    # Mapping User JSON keys to Account Types
-    # JSON Key -> (Account Name, Account Type, IsRetirement, Owner)
-    asset_map = {
-        # Primary User
-        "retirementAccount401k": ("401(k)", "401k", True, "primary"),
-        "retirementAccountIRA": ("Traditional IRA", "IRA", True, "primary"),
-        "retirementAccountRoth": ("Roth IRA", "Roth IRA", True, "primary"),
-        "investmentBalance": ("Brokerage Account", "Brokerage", False, "primary"),
-        "hsaBalance": ("Health Savings Account", "HSA", True, "primary"),
-        # Spouse
-        "spouseRetirementAccount401k": ("Spouse 401(k)", "401k", True, "spouse"),
-        "spouseRetirementAccountIRA": ("Spouse Traditional IRA", "IRA", True, "spouse"),
-        "spouseRetirementAccountRoth": ("Spouse Roth IRA", "Roth IRA", True, "spouse"),
-        "spouseInvestmentBalance": ("Spouse Brokerage Account", "Brokerage", False, "spouse"),
-        "spouseHsaBalance": ("Spouse Health Savings Account", "HSA", True, "spouse"),
-    }
+    # Map to Response Model (Flattening Type)
+    response_accounts = []
     
-    start_assets = current_user.assets or {}
-    changes_made = False
-    
-    for json_key, (name, acct_type, is_ret, owner) in asset_map.items():
-        val = start_assets.get(json_key)
-        if val and float(val) > 0:
-            # Check if exists (match Type AND Owner)
-            # using accountName as discriminator if types are same?
-            # Better to use accountOwner field if available.
-            # We assume db_accounts have accountOwner populated.
-            exists = next((a for a in db_accounts if a.accountType == acct_type and a.accountOwner == owner), None)
-            
-            if exists:
-                if float(exists.balance) != float(val):
-                    exists.balance = Decimal(str(val))
-                    db.add(exists)
-                    changes_made = True
-            else:
-                new_acct = InvestmentAccount(
-                    userId=user_id,
-                    accountName=name,
-                    accountType=acct_type,
-                    balance=Decimal(str(val)),
-                    isRetirementAccount=is_ret,
-                    accountOwner=owner
-                )
-                db.add(new_acct)
-                changes_made = True
-                new_acct.holdings = [] 
-                db_accounts = list(db_accounts) + [new_acct]
-
-    if changes_made:
-        await db.commit()
-        # Re-fetch is safest to get IDs and defaults
-        result = await db.execute(query)
-        db_accounts = result.scalars().all()
-        
-    # 3. Populate Metadata (Name, Class, Region) dynamically from RefFund
+    # Populate Metadata (Name, Class, Region) dynamically from RefFund
+    # Also fetch all funds map once
+    funds = []
     if db_accounts:
-        # Fetch all funds for lookup
         funds_res = await db.execute(select(RefFund))
         funds = funds_res.scalars().all()
-        fund_map = {f.ticker.upper(): f for f in funds}
-        
-        for account in db_accounts:
-            if account.holdings:
-                for holding in account.holdings:
-                    # Look up fund info
-                    if holding.ticker:
-                        f = fund_map.get(holding.ticker.upper())
-                        if f:
-                            holding.name = f.name
-                            holding.assetClass = f.assetClass
-                            holding.region = f.region
+    fund_map = {f.ticker.upper(): f for f in funds}
 
-    return db_accounts
+
+    for account in db_accounts:
+        # Resolve Name/Type from Reference
+        acct_name = account.accountTypeRef.name if account.accountTypeRef else "Unknown Account"
+        acct_type_code = account.accountTypeRef.code if account.accountTypeRef else "unknown"
+
+        if account.holdings:
+            for holding in account.holdings:
+                if holding.ticker:
+                    f = fund_map.get(holding.ticker.upper())
+                    if f:
+                        holding.name = f.name
+                        holding.assetClass = f.assetClass
+                        holding.region = f.region
+        
+        # Create Read Model
+        read_model = InvestmentAccountRead(
+            id=account.id,
+            userId=account.userId,
+            typeId=account.typeId,
+            accountName=acct_name, # Mapped from Ref
+            accountType=acct_type_code, # Mapped from Ref
+            balance=account.balance,
+            contributionAmount=account.contributionAmount,
+            accountOwner=account.accountOwner,
+            createdAt=account.createdAt,
+            updatedAt=account.updatedAt,
+            holdings=account.holdings
+        )
+        response_accounts.append(read_model)
+
+    return response_accounts
 
 @router.post("/investment-accounts", response_model=InvestmentAccountRead)
 async def create_investment_account(
-    account: InvestmentAccount,
+    account_in: "InvestmentAccountCreate", # Use string ref or import
     current_user: User = Depends(deps.get_current_user),
     db: AsyncSession = Depends(deps.get_db),
 ):
-    account.userId = current_user.id
+
+    
+    # 1. Resolve Account Type Code -> ID
+    # Normalize input
+    code = account_in.accountType.lower() if account_in.accountType else "other"
+    
+    # Try exact match first, then lower
+    res = await db.execute(select(RefAccountType).where(RefAccountType.code == account_in.accountType))
+    ref_type = res.scalars().first()
+    
+    if not ref_type:
+         # Try case insensitive
+         res = await db.execute(select(RefAccountType).where(RefAccountType.code == code))
+         ref_type = res.scalars().first()
+         
+    if not ref_type:
+        # Fallback to 'brokerage' (commonly available) or 'other'
+        res = await db.execute(select(RefAccountType).where(RefAccountType.code == "brokerage"))
+        ref_type = res.scalars().first()
+        
+    if not ref_type:
+         res = await db.execute(select(RefAccountType).where(RefAccountType.code == "other"))
+         ref_type = res.scalars().first()
+         
+    if not ref_type:
+        raise HTTPException(status_code=400, detail=f"Invalid account type: {account_in.accountType} and 'other' fallback missing.")
+
+    # 2. Create Instance
+    account = InvestmentAccount(
+        userId=current_user.id,
+        typeId=ref_type.id,
+        balance=account_in.balance,
+        contributionAmount=account_in.contributionAmount,
+        accountOwner=account_in.accountOwner
+    )
+
     db.add(account)
     await db.commit()
     await db.refresh(account)
-    return account
+    
+    # Re-fetch with holdings/ref for Read Model
+    query = select(InvestmentAccount).where(InvestmentAccount.id == account.id)\
+        .options(selectinload(InvestmentAccount.holdings), selectinload(InvestmentAccount.accountTypeRef))
+    result = await db.execute(query)
+    saved_account = result.scalars().first()
+    
+    # Construct Read Model (Manual map required due to flattened Ref properties)
+    acct_name = saved_account.accountTypeRef.name if saved_account.accountTypeRef else "Unknown"
+    acct_type_code = saved_account.accountTypeRef.code if saved_account.accountTypeRef else "unknown"
+    
+    return InvestmentAccountRead(
+        id=saved_account.id,
+        userId=saved_account.userId,
+        typeId=saved_account.typeId,
+        accountName=acct_name,
+        accountType=acct_type_code,
+        balance=saved_account.balance,
+        contributionAmount=saved_account.contributionAmount,
+        accountOwner=saved_account.accountOwner,
+        createdAt=saved_account.createdAt,
+        updatedAt=saved_account.updatedAt,
+        holdings=saved_account.holdings
+    )
+
+@router.patch("/investment-accounts/{account_id}", response_model=InvestmentAccountRead)
+async def update_investment_account(
+    account_id: UUID,
+    account_update: InvestmentAccountUpdate,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(deps.get_db),
+):
+    # Fetch account with holdings to verify ownership and update balance logic
+    query = select(InvestmentAccount).where(InvestmentAccount.id == account_id).options(selectinload(InvestmentAccount.holdings), selectinload(InvestmentAccount.accountTypeRef))
+    result = await db.execute(query)
+    account = result.scalars().first()
+    
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+        
+    if account.userId != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    update_data = account_update.dict(exclude_unset=True)
+    
+    # Handle Balance Update (Restored Logic)
+    if 'balance' in update_data:
+        new_balance = update_data['balance']
+        
+        # Calculate sum of NON-unallocated holdings
+        current_holdings_sum = sum(h.value or Decimal(0) for h in account.holdings if h.ticker != "UNALLOCATED")
+        
+        if new_balance < current_holdings_sum:
+            raise HTTPException(status_code=400, detail=f"Balance cannot be less than the sum of your holdings (${current_holdings_sum})")
+            
+        # Calculate Unallocated Amount
+        unallocated_amount = new_balance - current_holdings_sum
+        
+        # Find existing Unallocated holding
+        unalloc_holding = next((h for h in account.holdings if h.ticker == "UNALLOCATED"), None)
+        
+        if unallocated_amount > 0:
+            if unalloc_holding:
+                unalloc_holding.value = unallocated_amount
+                db.add(unalloc_holding)
+            else:
+                # Create Unallocated
+                new_unalloc = SecurityHolding(
+                    accountId=account.id,
+                    ticker="UNALLOCATED",
+                    name="Unallocated Cash",
+                    value=unallocated_amount,
+                    percentage="0", # Recalc later
+                    assetClass="cash"
+                )
+                db.add(new_unalloc)
+                # Append to holdings list for memory consistency in this request
+                account.holdings.append(new_unalloc)
+        else:
+            # If 0 unallocated, remove if exists
+            if unalloc_holding:
+                await db.delete(unalloc_holding)
+                account.holdings = [h for h in account.holdings if h.ticker != "UNALLOCATED"]
+        
+        # Update percentages for ALL holdings based on new total
+        if new_balance > 0:
+            for h in account.holdings:
+                 # If we just updated unalloc, use its new value reference if possible, or object state
+                 val = h.value
+                 if h.ticker == "UNALLOCATED" and unallocated_amount > 0:
+                     val = unallocated_amount
+                 
+                 if val:
+                    h.percentage = f"{(val / new_balance * 100):.2f}"
+                    db.add(h)
+                    
+        # Apply balance to account object
+        account.balance = new_balance
+
+    # Update other fields
+    if 'contributionAmount' in update_data:
+         account.contributionAmount = update_data['contributionAmount']
+
+    account.updatedAt = datetime.utcnow()
+    db.add(account)
+    await db.commit()
+    await db.refresh(account)
+    
+    # Construct Read Model for response
+    acct_name = account.accountTypeRef.name if account.accountTypeRef else "Unknown Account"
+    acct_type_code = account.accountTypeRef.code if account.accountTypeRef else "unknown"
+    
+    return InvestmentAccountRead(
+        id=account.id,
+        userId=account.userId,
+        typeId=account.typeId,
+        accountName=acct_name,
+        accountType=acct_type_code,
+        balance=account.balance,
+        contributionAmount=account.contributionAmount,
+        accountOwner=account.accountOwner,
+        createdAt=account.createdAt,
+        updatedAt=account.updatedAt,
+        holdings=account.holdings
+    )
+
+@router.post("/investment-accounts/{account_id}/reset", response_model=InvestmentAccountRead)
+async def reset_investment_account(
+    account_id: UUID,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(deps.get_db),
+):
+    # Fetch account to verify ownership
+    query = select(InvestmentAccount).where(InvestmentAccount.id == account_id).options(selectinload(InvestmentAccount.holdings), selectinload(InvestmentAccount.accountTypeRef))
+    result = await db.execute(query)
+    account = result.scalars().first()
+    
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+        
+    if account.userId != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    # 1. Delete all holdings
+    for holding in account.holdings:
+        await db.delete(holding)
+    
+    # 2. Reset Balance and Contribution
+    account.balance = Decimal(0)
+    # Resetting contribution as well? User request said "clears holdings and set the balance to $0".
+    # reset implies a fresh start, so usually implies removing contributions too to avoid mismatch.
+    account.contributionAmount = Decimal(0) 
+    account.holdings = [] # Clear relationship in memory
+    
+    account.updatedAt = datetime.utcnow()
+    db.add(account)
+    await db.commit()
+    await db.refresh(account)
+    
+    # Return Read Model
+    acct_name = account.accountTypeRef.name if account.accountTypeRef else "Unknown"
+    acct_type_code = account.accountTypeRef.code if account.accountTypeRef else "unknown"
+    
+    return InvestmentAccountRead(
+        id=account.id,
+        userId=account.userId,
+        typeId=account.typeId,
+        accountName=acct_name,
+        accountType=acct_type_code,
+        balance=account.balance,
+        contributionAmount=account.contributionAmount,
+        accountOwner=account.accountOwner,
+        createdAt=account.createdAt,
+        updatedAt=account.updatedAt,
+        holdings=[]
+    )
 
 @router.delete("/investment-accounts/{account_id}", status_code=204)
 async def delete_investment_account(
@@ -232,6 +438,33 @@ async def create_security_holding(
     db.add(holding)
     await db.commit()
     await db.refresh(holding)
+
+    # REFACTOR: Balance = Sum of Holdings
+    # Recalculate account balance based on all holdings
+    # We need to fetch all holdings for this account to sum them up
+    # However, since we just added one, we might need a fresh fetch
+    
+    # 1. Fetch all holdings for account
+    h_query = select(SecurityHolding).where(SecurityHolding.accountId == holding.accountId)
+    h_res = await db.execute(h_query)
+    all_holdings = h_res.scalars().all()
+    
+    # 2. Sum values
+    new_balance = sum((h.value or Decimal(0)) for h in all_holdings)
+    
+    # 3. Update account balance
+    account.balance = new_balance
+    db.add(account)
+    await db.commit()
+    
+    # 4. Update Percentages (Optional, but good for consistency)
+    if new_balance > 0:
+        for h in all_holdings:
+            if h.value:
+                h.percentage = f"{(h.value / new_balance * 100):.2f}"
+                db.add(h)
+        await db.commit()
+    await db.refresh(holding)
     
     # Populate Metadata from RefFund for Response (Not creating DB dependency for now)
     if holding.ticker:
@@ -266,11 +499,31 @@ async def update_security_holding(
         
     for key, value in holding_update.items():
         if hasattr(holding, key):
-            setattr(holding, key, value)
+             setattr(holding, key, value)
             
     db.add(holding)
     await db.commit()
     await db.refresh(holding)
+
+    # REFACTOR: Balance = Sum of Holdings
+    h_query = select(SecurityHolding).where(SecurityHolding.accountId == holding.accountId)
+    h_res = await db.execute(h_query)
+    all_holdings = h_res.scalars().all()
+    
+    new_balance = sum((h.value or Decimal(0)) for h in all_holdings)
+    
+    account.balance = new_balance
+    db.add(account)
+    await db.commit()
+    
+    # Update Percentages
+    if new_balance > 0:
+        for h in all_holdings:
+            if h.value:
+                h.percentage = f"{(h.value / new_balance * 100):.2f}"
+                db.add(h)
+        await db.commit()
+
     return holding
 
 @router.delete("/security-holdings/{holding_id}", status_code=204)
@@ -294,4 +547,58 @@ async def delete_security_holding(
         
     await db.delete(holding)
     await db.commit()
+
+    # REFACTOR: Balance = Sum of Holdings
+    h_query = select(SecurityHolding).where(SecurityHolding.accountId == holding.accountId)
+    h_res = await db.execute(h_query)
+    all_holdings = h_res.scalars().all()
+    
+    new_balance = sum((h.value or Decimal(0)) for h in all_holdings)
+    
+    account.balance = new_balance
+    db.add(account)
+    await db.commit()
+    
+    # Update Percentages
+    if new_balance > 0:
+        for h in all_holdings:
+             if h.value:
+                h.percentage = f"{(h.value / new_balance * 100):.2f}"
+                db.add(h)
+    
+    await db.commit()
     return None
+@router.delete("/users/{user_id}/investment-accounts/{account_id}/holdings", status_code=204)
+async def delete_account_holdings(
+    user_id: UUID,
+    account_id: UUID,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(deps.get_db),
+):
+    if current_user.id != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    # Verify account ownership
+    account_query = select(InvestmentAccount).where(InvestmentAccount.id == account_id)
+    result = await db.execute(account_query)
+    account = result.scalars().first()
+    
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+        
+    if account.userId != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Delete all holdings
+    # Note: sqlmodel delete is not always direct, using sqlalchemy delete
+    from sqlmodel import delete
+    query = delete(SecurityHolding).where(SecurityHolding.accountId == account_id)
+    await db.execute(query)
+    
+    # Reset balance to 0
+    account.balance = Decimal(0)
+    db.add(account)
+    
+    await db.commit()
+    return None
+

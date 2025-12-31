@@ -5,7 +5,15 @@ from .retirement import (
     AnnualSnapshot
 )
 from .milestone import UserMilestone, RefMilestone
-from .investment import InvestmentAccount, AssetAllocation, SecurityHolding, RefFund, InvestmentAccountRead
+from .investment import (
+    InvestmentAccount, 
+    AssetAllocation, 
+    SecurityHolding, 
+    RefFund, 
+    InvestmentAccountRead, 
+    InvestmentAccountUpdate,
+    InvestmentAccountCreate
+)
 from .activity import Activity
 from .roth import RothConversionPlan, RothConversionScenario
 from .goal import UserGoal
