@@ -41,6 +41,9 @@ class User(UserBase, table=True):
     id: UUID = Field(default_factory=uuid7, primary_key=True)
     password: Optional[str] = None # Virtual field for input, not column. Actual column is password_hash in Base.
     
+    # Role-Based Access Control
+    role: str = Field(default="user", sa_column_kwargs={"name": "role"})
+    
     # OAuth Fields
     googleId: Optional[str] = Field(default=None, sa_column_kwargs={"name": "google_id", "unique": True})
     profilePicture: Optional[str] = Field(default=None, sa_column_kwargs={"name": "profile_picture"})

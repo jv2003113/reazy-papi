@@ -150,8 +150,17 @@ async def get_dashboard(
              retirement_target_amount = float(snap.totalExpenses) / 0.04
              if retirement_target_amount > 0:
                  progress_pct = int((current_amount / retirement_target_amount) * 100)
+                 
+                 # Calculate Target Hit Year
+                 hit_stmt = select(AnnualSnapshot.year).where(
+                     AnnualSnapshot.planId == plan.id, 
+                     AnnualSnapshot.netWorth >= retirement_target_amount
+                 ).order_by(AnnualSnapshot.year.asc()).limit(1)
+                 hit_res = await db.execute(hit_stmt)
+                 hit_year = hit_res.scalars().first()
         else:
              projected_income = float(inputs.get("estimatedSocialSecurityBenefit", 0) or 0) / 12
+             hit_year = None
              
     # Prepare Portfolio Breakdown
     # Cash: Savings + Checking
@@ -257,7 +266,8 @@ async def get_dashboard(
             "targetValue": int(retirement_target_amount),
             "currentValue": int(current_amount),
             "progressPercentage": progress_pct,
-            "targetRetirementAge": display_target_age
+            "targetRetirementAge": display_target_age,
+            "targetHitYear": hit_year
         },
         "monthlyIncome": {
             "projected": int(projected_income),
