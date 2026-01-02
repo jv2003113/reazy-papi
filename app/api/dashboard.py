@@ -227,6 +227,31 @@ async def get_dashboard(
     # Use target_lookup_age for the response if plan exists
     display_target_age = target_lookup_age if plan else 65
     
+    # Calculate Inflation Adjustment for "Percent of Current" comparison
+    # We want to compare Future Projected Income vs. Future Value of Current Income
+    # This gives an "apples to apples" purchasing power comparison (or nominal matching)
+    inflation_rate = float((current_user.personal_info or {}).get("inflationRateAssumption") or 0.03)
+    years_to_projection = display_target_age - (get_pers("currentAge") or 30)
+    if years_to_projection < 0: years_to_projection = 0
+    
+    inflation_factor = (1 + inflation_rate) ** years_to_projection
+    
+    # Current Monthly Household Income
+    # Use the variable calculated at lines 89-93 if available, else re-sum
+    current_monthly_household_income = (get_inc("currentIncome") +
+        get_inc("spouseCurrentIncome") +
+        get_inc("otherIncomeAmount1") +
+        get_inc("otherIncomeAmount2") 
+        ) / 12
+        
+    inflated_current_monthly_income = current_monthly_household_income * inflation_factor
+    
+    percent_of_current = 0
+    if inflated_current_monthly_income > 0:
+        percent_of_current = int((projected_income / inflated_current_monthly_income) * 100)
+
+    target_year = (datetime.now().year + years_to_projection)
+
     return {
         "retirementTarget": {
             "targetValue": int(retirement_target_amount),
@@ -236,10 +261,10 @@ async def get_dashboard(
         },
         "monthlyIncome": {
             "projected": int(projected_income),
-            "goal": int(get_inc("currentIncome") * 0.8 / 12),
-            "percentOfCurrent": int((projected_income / ((get_inc("currentIncome") or 1)/12)) * 100),
+            "goal": int(inflated_current_monthly_income * 0.8), # Goal is typically 80% of pre-retirement income (adjusted)
+            "percentOfCurrent": percent_of_current,
             "description": "Projected monthly income at retirement (full)",
-            "targetYear": (datetime.now().year + (display_target_age - (get_pers("currentAge") or 30))) if plan else 2055
+            "targetYear": target_year
         },
         "savingsRate": {
             "percentage": savings_rate_pct,

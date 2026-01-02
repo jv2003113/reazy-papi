@@ -429,3 +429,44 @@ async def get_monte_carlo_simulation(
     )
     
     return result
+
+@router.post("/{plan_id}/regenerate", response_model=RetirementPlan)
+async def regenerate_plan(
+    plan_id: UUID,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(deps.get_current_user),
+    db: AsyncSession = Depends(deps.get_db),
+):
+    """
+    Regenerate a specific retirement plan (re-run calculations).
+    Useful when underlying data (User Profile, Assets) has changed, marking the plan as stale.
+    """
+    result = await db.execute(select(RetirementPlan).where(RetirementPlan.id == plan_id))
+    plan = result.scalars().first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Retirement plan not found")
+    if plan.userId != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
+    # Regenerate Calculation
+    service = RetirementService(db)
+    await service.generate_retirement_plan(plan)
+    
+    # Mark as clean
+    plan.isStale = False
+    db.add(plan)
+    await db.commit()
+    await db.refresh(plan)
+    
+    # Background AI Refresh
+    try:
+        g_res = await db.execute(select(UserGoal.title).where(UserGoal.userId == current_user.id, UserGoal.status == "in_progress"))
+        active_goal_titles = g_res.scalars().all()
+        a_res = await db.execute(select(UserActionItem.title).where(UserActionItem.user_id == current_user.id, UserActionItem.status == "todo"))
+        active_action_titles = a_res.scalars().all()
+        # Note: RecommendationEngine needs to be imported or available
+        background_tasks.add_task(RecommendationEngine.trigger_ai_refresh, current_user, plan, active_goal_titles, active_action_titles)
+    except Exception as e:
+        print(f"Failed to queue AI refresh: {e}")
+        
+    return plan
