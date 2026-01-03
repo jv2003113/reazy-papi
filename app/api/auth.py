@@ -8,7 +8,7 @@ from app.api import deps
 from app.core import security
 from app.core.config import settings
 from app.database import get_db
-from app.models.user import User
+from app.models.user import User, UserRead
 
 router = APIRouter()
 
@@ -25,7 +25,7 @@ class LoginRequest(BaseModel):
 
 class UserResponse(BaseModel):
     message: str
-    user: User
+    user: UserRead
 
 class SignupRequest(BaseModel):
     email: str
@@ -61,7 +61,8 @@ async def login(
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         expires=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         samesite="lax",
-        secure=False # Set to True in production
+        secure=False,
+        domain=None # Ensure it defaults to host only
     )
     
     return {

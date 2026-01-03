@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "deepseek-r1:latest"
     OLLAMA_VISION_MODEL: str = "llama3.2-vision"
 
+    # Lemon Squeezy
+    LEMONSQUEEZY_API_KEY: Optional[str] = None
+    LEMONSQUEEZY_STORE_ID: Optional[str] = None
+    LEMONSQUEEZY_WEBHOOK_SECRET: Optional[str] = None
+    LEMONSQUEEZY_VARIANT_ID: Optional[str] = None # Deprecated in favor of specific ones below? Or use as default.
+    LEMONSQUEEZY_VARIANT_ID_MONTHLY: Optional[str] = None
+    LEMONSQUEEZY_VARIANT_ID_YEARLY: Optional[str] = None
+
     model_config = SettingsConfigDict(
         env_file=".env", 
         case_sensitive=True,

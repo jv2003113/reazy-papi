@@ -42,10 +42,57 @@ class User(UserBase, table=True):
     password: Optional[str] = None # Virtual field for input, not column. Actual column is password_hash in Base.
     
     # Role-Based Access Control
-    role: str = Field(default="user", sa_column_kwargs={"name": "role"})
+    # Subscription (Lemon Squeezy)
+    subscriptionStatus: str = Field(default="none", sa_column_kwargs={"name": "subscription_status"}) # active, past_due, cancelled, none
+    subscriptionId: str | None = Field(default=None, sa_column_kwargs={"name": "subscription_id"})
+    customerId: str | None = Field(default=None, sa_column_kwargs={"name": "customer_id"})
+    variantId: str | None = Field(default=None, sa_column_kwargs={"name": "variant_id"})
+    currentPeriodEnd: datetime | None = Field(default=None, sa_column_kwargs={"name": "current_period_end"})
+
+    role: str = Field(default="user", sa_column_kwargs={"name": "role"}) # user, admin
     
     # OAuth Fields
     googleId: Optional[str] = Field(default=None, sa_column_kwargs={"name": "google_id", "unique": True})
     profilePicture: Optional[str] = Field(default=None, sa_column_kwargs={"name": "profile_picture"})
     
     createdAt: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"name": "created_at"})
+
+    @property
+    def has_access(self) -> bool:
+        # Admins always have access
+        if self.role == "admin":
+            return True
+            
+        # Active or Trialing users have access
+        if self.subscriptionStatus in ["active", "on_trial"]:
+            return True
+            
+        # Cancelled users have access until the period ends
+        if self.subscriptionStatus == "cancelled" and self.currentPeriodEnd:
+            # Check if end date is in the future
+            # Ensure timezone awareness matches (using utcnow for safety)
+            # currentPeriodEnd is stored as datetime
+            # If naive, assume UTC.
+            now = datetime.utcnow()
+            if self.currentPeriodEnd.replace(tzinfo=None) > now:
+                return True
+                
+        return False
+
+class UserRead(UserBase):
+    id: UUID
+    role: str
+    subscriptionStatus: str = "none"
+    subscriptionId: Optional[str] = None
+    customerId: Optional[str] = None
+    variantId: Optional[str] = None
+    currentPeriodEnd: Optional[datetime] = None
+    googleId: Optional[str] = None
+    profilePicture: Optional[str] = None
+    createdAt: datetime
+    has_access: bool
+
+    model_config = {
+        "from_attributes": True
+    }
+

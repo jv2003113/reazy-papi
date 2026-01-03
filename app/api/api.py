@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from . import auth, users, retirement, milestones, dashboard, goals, actions, investments, admin
+from . import auth, users, retirement, milestones, dashboard, goals, actions, investments, admin, subscriptions, webhooks
 
 api_router = APIRouter()
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
@@ -12,6 +12,8 @@ api_router.include_router(milestones.router, prefix="/milestones", tags=["milest
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_router.include_router(goals.router, prefix="/goals", tags=["goals"])
 api_router.include_router(actions.router, prefix="/actions", tags=["actions"])
+api_router.include_router(subscriptions.router, prefix="/subscriptions", tags=["subscriptions"])
+api_router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 # Investments router uses paths like /funds and /users/{id}/investment-accounts, so we mount at root of API
 # Investments router uses paths like /funds and /users/{id}/investment-accounts, so we mount at root of API
 api_router.include_router(investments.router, tags=["investments"])
