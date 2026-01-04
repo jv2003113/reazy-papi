@@ -1,4 +1,4 @@
-from typing import List, Any
+from typing import List, Any, Optional
 from uuid import UUID
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
