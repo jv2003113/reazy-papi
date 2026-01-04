@@ -42,4 +42,4 @@ def health_check():
 
 @app.get("/")
 def root():
-    return {"message": "Welcome to Reazy API (FastAPI)"}
+    return {"message": "Welcome to Retire Easy API (FastAPI)"}
