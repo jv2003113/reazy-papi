@@ -72,7 +72,12 @@ async def handle_lemonsqueezy_webhook(
                 # python fromisoformat might need replacing 'Z' with '+00:00'
                 if target_date_str.endswith('Z'):
                     target_date_str = target_date_str[:-1] + '+00:00'
-                user.currentPeriodEnd = datetime.fromisoformat(target_date_str)
+                dt = datetime.fromisoformat(target_date_str)
+                # Convert to naive UTC to satisfy asyncpg/Postgres TIMESTAMP WITHOUT TIME ZONE
+                if dt.tzinfo is not None:
+                    from datetime import timezone
+                    dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                user.currentPeriodEnd = dt
             except ValueError:
                 pass
                 

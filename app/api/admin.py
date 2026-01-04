@@ -7,8 +7,10 @@ from datetime import datetime
 
 from app.api import deps
 from app.models.user import User
-from app.models.retirement import RetirementPlan
+from app.models.retirement import RetirementPlan, AnnualSnapshot
 from app.models.goal import UserGoal
+from app.models.form_progress import MultiStepFormProgress
+from uuid import UUID
 
 router = APIRouter()
 
@@ -104,4 +106,60 @@ async def get_users_list(
     return {
         "users": user_summaries,
         "total": total
+    }
+
+@router.delete("/users/{user_id}", response_model=UserSummary)
+async def delete_user(
+    user_id: str,
+    current_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(deps.get_db),
+) -> Any:
+    """
+    Delete a user and all their associated data (Plans, Goals, Progress).
+    """
+    # Check if user exists
+    user_uuid = UUID(user_id)
+    stmt = select(User).where(User.id == user_uuid)
+    result = await db.execute(stmt)
+    user = result.scalars().first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+        
+    # Cascade Delete Manual (just in case)
+    
+    # 1. MultiStepFormProgress
+    await db.execute(select(MultiStepFormProgress).where(MultiStepFormProgress.userId == user_uuid))
+    # Actually execute delete
+    from sqlalchemy import delete
+    await db.execute(delete(MultiStepFormProgress).where(MultiStepFormProgress.userId == user_uuid))
+    
+    # 2. Retirement Plans (Snapshots cascade from Plan)
+    # Must manually delete snapshots first as bulk delete bypasses ORM cascade and DB might lack ON DELETE CASCADE
+    plan_ids_result = await db.execute(select(RetirementPlan.id).where(RetirementPlan.userId == user_uuid))
+    plan_ids = plan_ids_result.scalars().all()
+    
+    if plan_ids:
+        await db.execute(delete(AnnualSnapshot).where(AnnualSnapshot.planId.in_(plan_ids)))
+
+    await db.execute(delete(RetirementPlan).where(RetirementPlan.userId == user_uuid))
+    
+    # 3. User Goals
+    await db.execute(delete(UserGoal).where(UserGoal.userId == user_uuid))
+    
+    # 4. The User
+    await db.delete(user)
+    
+    await db.commit()
+    
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "role": user.role,
+        "createdAt": user.createdAt,
+        "planCount": 0,
+        "isActive": False
     }
